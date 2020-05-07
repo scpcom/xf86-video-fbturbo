@@ -2172,6 +2172,7 @@ FBDevPointerMoved(SCRN_ARG_TYPE arg, int x, int y)
 }
 
 
+#if 0
 /***********************************************************************
  * DGA stuff
  ***********************************************************************/
@@ -2301,11 +2302,12 @@ FBDevDGAAddModes(ScrnInfoPtr pScrn)
 	pMode = pMode->next;
     } while (pMode != pScrn->modes);
 }
+#endif
 
 static Bool
 FBDevDGAInit(ScrnInfoPtr pScrn, ScreenPtr pScreen)
 {
-#ifdef XFreeXDGA
+#if 0
     FBDevPtr fPtr = FBDEVPTR(pScrn);
 
     if (pScrn->depth < 8)
