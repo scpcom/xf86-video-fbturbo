@@ -656,7 +656,8 @@ FBTurboSetDRMMaster(void)
 {
 	int ret = 0;
 
-	assert(connection.fd >= 0);
+	if (connection.fd < 0)
+		return ret;
 
 	if (!connection.master_count)
 		ret = drmSetMaster(connection.fd);
@@ -672,7 +673,9 @@ FBTurboDropDRMMaster(void)
 {
 	int ret = 0;
 
-	assert(connection.fd >= 0);
+	if (connection.fd < 0)
+		return ret;
+
 	assert(connection.master_count > 0);
 
 	if (1 == connection.master_count)

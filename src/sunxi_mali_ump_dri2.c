@@ -29,6 +29,7 @@
 #include "config.h"
 #endif
 
+#include <malloc.h>
 #include <sys/ioctl.h>
 
 #include "xorgVersion.h"
@@ -1421,6 +1422,51 @@ static const char *driverNamesWithVDPAU[2] = {
     "sunxi" /* DRI2DriverVDPAU */
 };
 
+static char *
+fbturbo_dri2_probe_driver_name(ScreenPtr pScreen, DRI2InfoPtr info)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    drmVersionPtr version = drmGetVersion(info->fd);
+    char *kernel_driver;
+
+    if (!version) {
+        ERROR_MSG(
+                   "[DRI2] Couldn't drmGetVersion() on non-PCI device, "
+                   "no driver name found.");
+        return NULL;
+    }
+
+    kernel_driver = strndup(version->name, version->name_len);
+    drmFreeVersion(version);
+    return kernel_driver;
+}
+
+static Bool
+fbturbo_dri2_init_driver_name(ScreenPtr pScreen, DRI2InfoPtr info)
+{
+    if (info->version == 3 || info->numDrivers == 0) {
+        const char **ds_driverNames;
+
+        /* Driver too old: use the old-style driverName field */
+        info->numDrivers = info->driverName ? 1 : 2;
+        ds_driverNames = xallocarray(info->numDrivers, sizeof(*ds_driverNames));
+        if (!ds_driverNames)
+            return FALSE;
+
+        if (info->driverName) {
+            ds_driverNames[0] = info->driverName;
+        } else {
+            ds_driverNames[0] = ds_driverNames[1] = fbturbo_dri2_probe_driver_name(pScreen, info);
+            if (!ds_driverNames[0])
+                return FALSE;
+        }
+
+        info->driverNames = ds_driverNames;
+    }
+
+    return TRUE;
+}
+
 FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseOverlay,
                                   Bool      bSwapbuffersWait,
@@ -1558,6 +1604,11 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     info.CreateBuffer = MaliDRI2CreateBuffer;
     info.DestroyBuffer = MaliDRI2DestroyBuffer;
     info.CopyRegion = MaliDRI2CopyRegion;
+
+    /* driverNames will be filled in by dri2.c since xorg-server 1.17.x
+       maybe this part can be surrounded by 
+       if ABI_VIDEODRV_VERSION < SET_ABI_VERSION(19, 0) */
+    fbturbo_dri2_init_driver_name(pScreen, &info);
 
     if (!DRI2ScreenInit(pScreen, &info)) {
         drmClose(fPtr->drmFD);

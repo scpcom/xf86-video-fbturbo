@@ -35,10 +35,10 @@
 #include "xf86.h"
 #include "xf86drm.h"
 
+#include "exa.h"
+
 #include "fbdev_priv.h"
 #include "fbdev_exa.h"
-
-#include "exa.h"
 
 /* This file has a trivial EXA implementation which accelerates nothing.  It
  * is used as the fall-back in case the EXA implementation for the current

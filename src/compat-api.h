@@ -110,4 +110,8 @@
 
 #endif
 
+#ifndef xallocarray
+#define xallocarray(num, size) realloc(NULL, (num) * (size))
+#endif
+
 #endif
