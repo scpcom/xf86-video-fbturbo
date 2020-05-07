@@ -215,6 +215,31 @@ WindowWalker(WindowPtr pWin, pointer value)
     return WT_WALKCHILDREN;
 }
 
+static Bool
+canflip(DrawablePtr pDraw)
+{
+	ScreenPtr pScreen = pDraw->pScreen;
+	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	if (fPtr->NoFlip) {
+		/* flipping is disabled by user option */
+		return FALSE;
+	} else {
+		return (pDraw->type == DRAWABLE_WINDOW) &&
+				DRI2CanFlip(pDraw);
+	}
+}
+
+static PixmapPtr
+createpix(DrawablePtr pDraw)
+{
+	ScreenPtr pScreen = pDraw->pScreen;
+	int flags = canflip(pDraw) ? ARMSOC_CREATE_PIXMAP_SCANOUT : CREATE_PIXMAP_USAGE_BACKING_PIXMAP;
+	return pScreen->CreatePixmap(pScreen,
+			pDraw->width, pDraw->height, pDraw->depth, flags);
+}
+
 /* create the BO */
 _X_EXPORT void *
 FBTurboCreatePixmap2(ScreenPtr pScreen, int width, int height,
@@ -608,6 +633,32 @@ static DRI2Buffer2Ptr validate_dri2buf(DRI2Buffer2Ptr dri2buf)
     return dri2buf;
 }
 
+static Bool prepare_flip(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
+{
+	ScreenPtr                pScreen  = pDraw->pScreen;
+	ScrnInfoPtr              pScrn    = xf86Screens[pScreen->myNum];
+	FBTurboMaliDRI2         *mali     = FBTURBO_MALI_DRI2(pScrn);
+	BOInfoPtr                privates = (BOInfoPtr)buffer->driverPrivate;
+
+	if (canflip(pDraw) && buffer->attachment != DRI2BufferFrontLeft) {
+		/* Create an fb around this buffer. This will fail and we will
+		 * fall back to blitting if the display controller hardware
+		 * cannot scan out this buffer (for example, if it doesn't
+		 * support the format or there was insufficient scanout memory
+		 * at buffer creation time). */
+		int ret = mali->bo_ops->add_fb(privates->handle);
+		if (ret) {
+			WARNING_MSG(
+					"Falling back to blitting a flippable window");
+		}
+	}
+
+	DRI2_BUFFER_SET_FB(buffer->flags, mali->bo_ops->get_fb(privates->handle) > 0 ? 1 : 0);
+	DRI2_BUFFER_SET_REUSED(buffer->flags, 0);
+
+	return TRUE;
+}
+
 static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
                                            unsigned int attachment,
                                            unsigned int format)
@@ -616,6 +667,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     ScrnInfoPtr              pScrn    = xf86Screens[pScreen->myNum];
     DRI2Buffer2Ptr           buffer;
     BOInfoPtr                privates;
+    FBDevPtr                 fPtr = FBDEVPTR(pScrn);
     FBTurboMaliDRI2         *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t            *disp = SUNXI_DISP(pScrn);
     Bool                     can_use_overlay = TRUE;
@@ -641,7 +693,11 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
                  pWindowPixmap->screen_x, pWindowPixmap->screen_y);
     }
 
-    if (pDraw->type == DRAWABLE_PIXMAP) {
+    if (buffer->attachment == DRI2BufferFrontLeft && fPtr->UseEXA) {
+        pPixmap = draw2pix(pDraw);
+        pPixmap->refcnt++;
+    } 
+    else if (pDraw->type == DRAWABLE_PIXMAP) {
         pPixmap = (PixmapPtr)pDraw;
     }
 
@@ -661,6 +717,8 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         buffer->cpp           = pPixmap->drawable.bitsPerPixel / 8;
         buffer->pitch         = pPixmap->devKind;
         buffer->name = mali->bo_ops->secure_id_get(privates->handle);
+
+        prepare_flip(pDraw, buffer);
 
         DEBUG_MSG(2,"DRI2CreateBuffer pix=%p, buf=%p:%p, att=%d, id=%d:%d, w=%zd, h=%zd, cpp=%d, depth=%d",
                  pDraw, buffer, privates, attachment, buffer->name, buffer->flags,
@@ -825,7 +883,17 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         }
 
         /* Allocate BO */
-        privates->handle = mali->bo_ops->new(mali->bo_dev,
+        if (fPtr->UseEXA) {
+            pPixmap = createpix(pDraw);
+
+            privates = MigratePixmapToBO(pPixmap);
+
+            privates->pPixmap = pPixmap;
+
+            buffer->driverPrivate = privates;
+        }
+        else
+            privates->handle = mali->bo_ops->new(mali->bo_dev,
                                 privates->width,
                                 privates->height,
                                 privates->depth,
@@ -852,6 +920,8 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
 
         window_state->bo_mem_ptr = privates;
         privates->refcount++;
+
+        prepare_flip(pDraw, buffer);
     }
 
     DEBUG_MSG(2,"DRI2CreateBuffer win=%p, buf=%p:%p, att=%d, id=%d:%d, w=%zd, h=%zd, cpp=%d, depth=%d",
@@ -1525,15 +1595,18 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         /* Wrap the current DestroyWindow function */
         mali->DestroyWindow = pScreen->DestroyWindow;
         pScreen->DestroyWindow = DestroyWindow;
-        /* Wrap the current PostValidateTree function */
-        mali->PostValidateTree = pScreen->PostValidateTree;
-        pScreen->PostValidateTree = PostValidateTree;
-        /* Wrap the current GetImage function */
-        mali->GetImage = pScreen->GetImage;
-        pScreen->GetImage = GetImage;
-        /* Wrap the current DestroyPixmap function */
-        mali->DestroyPixmap = pScreen->DestroyPixmap;
-        pScreen->DestroyPixmap = DestroyPixmap;
+
+	if (!fPtr->UseEXA) {
+            /* Wrap the current PostValidateTree function */
+            mali->PostValidateTree = pScreen->PostValidateTree;
+            pScreen->PostValidateTree = PostValidateTree;
+            /* Wrap the current GetImage function */
+            mali->GetImage = pScreen->GetImage;
+            pScreen->GetImage = GetImage;
+            /* Wrap the current DestroyPixmap function */
+            mali->DestroyPixmap = pScreen->DestroyPixmap;
+            pScreen->DestroyPixmap = DestroyPixmap;
+	}
 
         /* Wrap hardware cursor callback functions */
         if (hwc) {
@@ -1558,9 +1631,12 @@ void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
 
     /* Unwrap functions */
     pScreen->DestroyWindow    = mali->DestroyWindow;
-    pScreen->PostValidateTree = mali->PostValidateTree;
-    pScreen->GetImage         = mali->GetImage;
-    pScreen->DestroyPixmap    = mali->DestroyPixmap;
+
+    if (!fPtr->UseEXA) {
+        pScreen->PostValidateTree = mali->PostValidateTree;
+        pScreen->GetImage         = mali->GetImage;
+        pScreen->DestroyPixmap    = mali->DestroyPixmap;
+    }
 
     if (hwc) {
         hwc->EnableHWCursor  = mali->EnableHWCursor;

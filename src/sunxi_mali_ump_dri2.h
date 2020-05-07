@@ -194,16 +194,4 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseDumb);
 void FBTurboMaliDRI2_Close(ScreenPtr pScreen);
 
-void *FBTurboCreatePixmap2(ScreenPtr pScreen, int width, int height,
-		int depth, int usage_hint, int bitsPerPixel,
-		int *new_fb_pitch);
-void FBTurboDestroyPixmap(ScreenPtr pScreen, void *driverPriv);
-Bool FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
-		int depth, int bitsPerPixel, int devKind,
-		pointer pPixData);
-void FBTurboWaitMarker(ScreenPtr pScreen, int marker);
-Bool FBTurboPrepareAccess(PixmapPtr pPixmap, int index);
-void FBTurboFinishAccess(PixmapPtr pPixmap, int index);
-Bool FBTurboPixmapIsOffscreen(PixmapPtr pPixmap);
-
 #endif

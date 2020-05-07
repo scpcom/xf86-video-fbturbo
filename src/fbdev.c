@@ -1182,12 +1182,15 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
                 fPtr->UseDumb = FALSE;
         }
 
+	/* follow the DRI2 and UseDumb option */
+	fPtr->UseEXA = xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2, TRUE) && fPtr->UseDumb;
+
 	/* check the processor type */
 	cpuinfo = cpuinfo_init();
 	INFO_MSG( "processor: %s",
 	           cpuinfo->processor_name);
 	/* don't use shadow by default if we have VFP/NEON or HW acceleration */
-	fPtr->shadowFB = !cpuinfo->has_arm_vfp && !fPtr->UseDumb &&
+	fPtr->shadowFB = !cpuinfo->has_arm_vfp && !fPtr->UseDumb && !fPtr->UseEXA &&
 	                 !xf86GetOptValString(fPtr->Options, OPTION_ACCELMETHOD);
 	cpuinfo_close(cpuinfo);
 
@@ -1709,7 +1712,7 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	 * windows it is beneficial) if shadow is not enabled.
 	 */
 	useBackingStore = xf86ReturnOptValBool(fPtr->Options, OPTION_USE_BS,
-	                                       !fPtr->shadowFB);
+	                                       !fPtr->shadowFB && !fPtr->UseEXA);
 #ifndef __arm__
 	/*
 	 * right now we can only make "smart" decisions on ARM hardware,
@@ -1936,6 +1939,9 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	}
 
 	if (xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2, TRUE)) {
+	    if (fPtr->UseEXA)
+		fPtr->FBTurboEXA_private = InitNullEXA(pScreen, pScrn, fPtr->drmFD);
+
 	    fPtr->FBTurboMaliDRI2_private = FBTurboMaliDRI2_Init(pScreen,
 		xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2_OVERLAY, TRUE),
 		xf86ReturnOptValBool(fPtr->Options, OPTION_SWAPBUFFERS_WAIT, TRUE),
@@ -1993,6 +1999,10 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 	    fPtr->SunxiVideo_private = NULL;
 	}
 #endif
+
+	if (fPtr->FBTurboEXA_private)
+		if (fPtr->FBTurboEXA_private->CloseScreen)
+			fPtr->FBTurboEXA_private->CloseScreen(CLOSE_SCREEN_ARGS);
 
 	fbdevHWRestore(pScrn);
 	fbdevHWUnmapVidmem(pScrn);
@@ -2063,6 +2073,12 @@ FBDevFreeScreen(FREE_SCREEN_ARGS_DECL)
 	if (!fPtr) {
 		/* This can happen if a Screen is deleted after Probe(): */
 		return;
+	}
+
+	if (fPtr->FBTurboEXA_private) {
+		if (fPtr->FBTurboEXA_private->FreeScreen)
+			fPtr->FBTurboEXA_private->FreeScreen(
+					FREE_SCREEN_ARGS(pScrn));
 	}
 
 	if (fPtr->bo_ops)

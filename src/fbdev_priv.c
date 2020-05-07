@@ -16,9 +16,17 @@
 #include "sunxi_disp_hwcursor.h"
 #include "sunxi_mali_ump_dri2.h"
 
+#include "exa.h"
+
 DevPrivateKeyRec FBTurboScreenPrivateKeyRec;
 
 #ifndef USE_DIX_PRIVATE
+unsigned long
+FBTurboGetPixmapPitch(PixmapPtr pPixmap)
+{
+	return pPixmap->devKind;
+}
+
 void *
 FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap)
 {
@@ -28,6 +36,9 @@ FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap)
 	BOInfoPtr bo = NULL;
 
 	HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
+
+	if (!bo)
+		bo = exaGetPixmapDriverPrivate(pPixmap);
 
 	return bo;
 }
@@ -110,14 +121,34 @@ void FBTurboDelWindowDriverPrivate(DrawablePtr pDraw, void* ptr)
 }
 
 #else
+unsigned long
+FBTurboGetPixmapPitch(PixmapPtr pPixmap)
+{
+	ScreenPtr pScreen = pPixmap->drawable.pScreen;
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	if (fPtr->UseEXA)
+		return exaGetPixmapPitch(pPixmap);
+	else
+		return pPixmap->devKind;
+}
+
 void *
 FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap)
 {
-	FBTurboPixmapPriv(pPixmap);
+	ScreenPtr pScreen = pPixmap->drawable.pScreen;
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
 	void* ptr = NULL;
 
-	if (pFBTurboPixmap)
-		ptr = pFBTurboPixmap->driverPriv;
+	if (fPtr->UseEXA)
+                ptr = exaGetPixmapDriverPrivate(pPixmap);
+	else {
+		FBTurboPixmapPriv(pPixmap);
+		if (pFBTurboPixmap)
+			ptr = pFBTurboPixmap->driverPriv;
+	}
 
 	return ptr;
 }
@@ -125,10 +156,16 @@ FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap)
 void
 FBTurboSetPixmapDriverPrivate(PixmapPtr pPixmap, void* ptr)
 {
-	FBTurboPixmapPriv(pPixmap);
+	ScreenPtr pScreen = pPixmap->drawable.pScreen;
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
 
-	if (pFBTurboPixmap)
-		pFBTurboPixmap->driverPriv = ptr;
+	if (!fPtr->UseEXA) {
+		FBTurboPixmapPriv(pPixmap);
+
+		if (pFBTurboPixmap)
+			pFBTurboPixmap->driverPriv = ptr;
+	}
 }
 
 void

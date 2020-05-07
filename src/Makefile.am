@@ -53,6 +53,8 @@ fbturbo_drv_la_SOURCES = \
          backing_store_tuner.h \
          interfaces.h \
          fbdev.c \
+         fbdev_exa_null.c \
+         fbdev_exa.h \
          fbdev_priv.c \
          fbdev_priv.h \
          fb_debug.h \

@@ -40,6 +40,7 @@
 
 #include "fb_debug.h"
 #include "fbdev_bo.h"
+#include "fbdev_exa.h"
 
 typedef struct {
 	unsigned char*			fbstart;
@@ -64,6 +65,7 @@ typedef struct {
 	void				*sunxi_disp_private;
 	void				*fb_copyarea_private;
 	void				*SunxiDispHardwareCursor_private;
+	struct FBTurboEXARec		*FBTurboEXA_private;
 	void				*FBTurboMaliDRI2_private;
 	void				*SunxiG2D_private;
 	void				*SunxiVideo_private;
@@ -183,6 +185,8 @@ draw2pix(DrawablePtr pDraw)
 		return (PixmapPtr)pDraw;
 }
 
+unsigned long FBTurboGetPixmapPitch(PixmapPtr pPixmap);
+
 void *FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap);
 
 void FBTurboSetPixmapDriverPrivate(PixmapPtr pPixmap, void* ptr);
@@ -196,4 +200,6 @@ void FBTurboSetWindowDriverPrivate(DrawablePtr pDraw, void* ptr);
 void FBTurboDelWindowDriverPrivate(DrawablePtr pDraw, void* ptr);
 
 Bool InitFBTurboPriv(ScreenPtr pScreen, ScrnInfoPtr pScrn, int fd);
+
+struct FBTurboEXARec *InitNullEXA(ScreenPtr pScreen, ScrnInfoPtr pScrn, int fd);
 
