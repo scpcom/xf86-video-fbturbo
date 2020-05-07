@@ -29,11 +29,32 @@
 #include "xorg-server.h"
 #include "xf86.h"
 #include "xf86Crtc.h"
+#include "xf86DDC.h"
 #include "xf86drmMode.h"
 
 #include "fb_debug.h"
 #include "fbdev_priv.h"
 #include "fbdev_lcd.h"
+
+#ifndef DIV_ROUND_CLOSEST
+/*
+ * Divide positive or negative dividend by positive or negative divisor
+ * and round to closest integer. Result is undefined for negative
+ * divisors if the dividend variable type is unsigned and for negative
+ * dividends if the divisor variable type is unsigned.
+ */
+#define DIV_ROUND_CLOSEST(x, divisor)(			\
+{							\
+	typeof(x) __x = x;				\
+	typeof(divisor) __d = divisor;			\
+	(((typeof(x))-1) > 0 ||				\
+	 ((typeof(divisor))-1) > 0 ||			\
+	 (((__x) > 0) == ((__d) > 0))) ?		\
+		(((__x) + ((__d) / 2)) / (__d)) :	\
+		(((__x) - ((__d) / 2)) / (__d));	\
+}							\
+)
+#endif
 
 struct fbdev_lcd_rec {
 	int fd;
@@ -51,6 +72,7 @@ struct fbdev_lcd_output_priv {
 	int output_id;
 	drmModeConnectorPtr connector;
 	drmModeEncoderPtr *encoders;
+	drmModePropertyBlobPtr edid_blob;
 };
 
 static void fbdev_lcd_output_dpms(xf86OutputPtr output, int mode);
@@ -169,6 +191,32 @@ static void fbdev_lcd_crtc_set_origin(xf86CrtcPtr crtc, int x, int y)
 	IGNORE(y);
 }
 
+uint32_t fbdev_lcd_vrefresh(uint32_t m_vrefresh, uint32_t m_clock,
+		uint16_t m_htotal, uint16_t m_vtotal, uint16_t m_vscan,
+		uint32_t m_flags)
+{
+	int refresh = 0;
+
+	if (m_vrefresh > 0)
+		refresh = m_vrefresh;
+	else if (m_htotal > 0 && m_vtotal > 0) {
+		unsigned int num, den;
+
+		num = m_clock * 1000;
+		den = m_htotal * m_vtotal;
+
+		if (m_flags & DRM_MODE_FLAG_INTERLACE)
+			num *= 2;
+		if (m_flags & DRM_MODE_FLAG_DBLSCAN)
+			den *= 2;
+		if (m_vscan > 1)
+			den *= m_vscan;
+
+		refresh = DIV_ROUND_CLOSEST(num, den);
+	}
+	return refresh;
+}
+
 static void
 fbdev_lcd_convert_to_kmode(ScrnInfoPtr pScrn, drmModeModeInfo *kmode,
 		DisplayModePtr mode)
@@ -192,6 +240,45 @@ fbdev_lcd_convert_to_kmode(ScrnInfoPtr pScrn, drmModeModeInfo *kmode,
 	if (mode->name)
 		strncpy(kmode->name, mode->name, DRM_DISPLAY_MODE_LEN);
 	kmode->name[DRM_DISPLAY_MODE_LEN-1] = 0;
+
+	kmode->vrefresh = fbdev_lcd_vrefresh(mode->VRefresh, kmode->clock, kmode->htotal, kmode->vtotal, kmode->vscan, kmode->flags);
+}
+
+static void
+fbdev_lcd_convert_from_kmode(ScrnInfoPtr pScrn, drmModeModeInfo *kmode,
+		DisplayModePtr	mode)
+{
+	memset(mode, 0, sizeof(DisplayModeRec));
+	mode->status = MODE_OK;
+
+	mode->Clock = kmode->clock;
+
+	mode->HDisplay = kmode->hdisplay;
+	mode->HSyncStart = kmode->hsync_start;
+	mode->HSyncEnd = kmode->hsync_end;
+	mode->HTotal = kmode->htotal;
+	mode->HSkew = kmode->hskew;
+
+	mode->VDisplay = kmode->vdisplay;
+	mode->VSyncStart = kmode->vsync_start;
+	mode->VSyncEnd = kmode->vsync_end;
+	mode->VTotal = kmode->vtotal;
+	mode->VScan = kmode->vscan;
+
+	mode->Flags = kmode->flags;
+	mode->name = strdup(kmode->name);
+
+	DEBUG_MSG(2, "copy mode %s (%p %p)", kmode->name, mode->name, mode);
+
+	if (kmode->type & DRM_MODE_TYPE_DRIVER)
+		mode->type = M_T_DRIVER;
+
+	if (kmode->type & DRM_MODE_TYPE_PREFERRED)
+		mode->type |= M_T_PREFERRED;
+
+	mode->VRefresh = fbdev_lcd_vrefresh(kmode->vrefresh, kmode->clock, kmode->htotal, kmode->vtotal, kmode->vscan, kmode->flags);
+
+	xf86SetModeCrtc(mode, pScrn->adjustFlags);
 }
 
 static Bool
@@ -541,7 +628,7 @@ void fbdev_copy_mode(DisplayModePtr source_mode_ptr, DisplayModePtr mode_ptr)
 	mode_ptr->CrtcVAdjusted = source_mode_ptr->CrtcVAdjusted;
 
 	mode_ptr->HSync = source_mode_ptr->HSync;
-	mode_ptr->VRefresh = source_mode_ptr->VRefresh;
+	mode_ptr->VRefresh = fbdev_lcd_vrefresh(source_mode_ptr->VRefresh, mode_ptr->Clock, mode_ptr->HTotal, mode_ptr->VTotal, mode_ptr->VScan, mode_ptr->Flags);
 }
 
 void fbdev_fill_mode(DisplayModePtr mode_ptr, int xres, int yres, float vrefresh, int type, DisplayModePtr prev)
@@ -600,16 +687,12 @@ DisplayModePtr fbdev_make_mode(int xres, int yres, float vrefresh, int type, Dis
 	return mode_ptr;
 }
 
-static DisplayModePtr fbdev_lcd_output_get_modes(xf86OutputPtr output)
+static DisplayModePtr fbdev_lcd_output_dummy_get_modes(xf86OutputPtr output)
 {
 	FBDevPtr fPtr = FBDEVPTR(output->scrn);
 	DisplayModePtr mode_ptr;
 	ScrnInfoPtr pScrn = output->scrn;
 
-#if 0
-	unsigned int hactive_s = fPtr->fb_lcd_var.xres;
-	unsigned int vactive_s = fPtr->fb_lcd_var.yres;
-#endif
 	float vrefresh = 60.0;
 
 	if (pScrn->modes != NULL)
@@ -655,6 +738,70 @@ static DisplayModePtr fbdev_lcd_output_get_modes(xf86OutputPtr output)
 	mode_ptr = fbdev_make_mode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, M_T_DRIVER, NULL);
 
 	return mode_ptr;
+}
+
+static DisplayModePtr
+fbdev_lcd_output_get_modes(xf86OutputPtr output)
+{
+	ScrnInfoPtr pScrn = output->scrn;
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	struct fbdev_lcd_output_priv *fbdev_lcd_output = output->driver_private;
+	drmModeConnectorPtr connector = fbdev_lcd_output->connector;
+	struct fbdev_lcd_rec *fbdev_lcd = fbdev_lcd_output->fbdev_lcd;
+	DisplayModePtr modes = NULL;
+	drmModePropertyPtr prop;
+	xf86MonPtr ddc_mon = NULL;
+	int i;
+
+	 if (fbdev_lcd->isDummy)
+		return fbdev_lcd_output_dummy_get_modes(output);
+
+	/* look for an EDID property */
+	for (i = 0; i < connector->count_props; i++) {
+		prop = drmModeGetProperty(fbdev_lcd->fd, connector->props[i]);
+		if (!prop)
+			continue;
+
+		if ((prop->flags & DRM_MODE_PROP_BLOB) &&
+		    !strcmp(prop->name, "EDID")) {
+			if (fbdev_lcd_output->edid_blob)
+				drmModeFreePropertyBlob(
+						fbdev_lcd_output->edid_blob);
+			fbdev_lcd_output->edid_blob =
+					drmModeGetPropertyBlob(fbdev_lcd->fd,
+						connector->prop_values[i]);
+		}
+		drmModeFreeProperty(prop);
+	}
+
+	if (fbdev_lcd_output->edid_blob)
+		ddc_mon = xf86InterpretEDID(pScrn->scrnIndex,
+				fbdev_lcd_output->edid_blob->data);
+
+	if (ddc_mon) {
+		if (fbdev_lcd_output->edid_blob->length > 128)
+			ddc_mon->flags |= MONITOR_EDID_COMPLETE_RAWDATA;
+		xf86OutputSetEDID(output, ddc_mon);
+		xf86SetDDCproperties(pScrn, ddc_mon);
+	}
+
+	DEBUG_MSG(1, "count_modes: %d", connector->count_modes);
+
+	/* modes should already be available */
+	for (i = 0; i < connector->count_modes; i++) {
+		DisplayModePtr mode = xnfalloc(sizeof(DisplayModeRec));
+
+		fbdev_lcd_convert_from_kmode(pScrn, &connector->modes[i], mode);
+		//if ((fPtr->fb_lcd_var.xres == mode->HDisplay) && (fPtr->fb_lcd_var.yres == mode->VDisplay))
+		if ((fPtr->buildin.HDisplay == mode->HDisplay) && 
+		    (fPtr->buildin.VDisplay == mode->VDisplay) &&
+		    (fPtr->buildin.VRefresh == mode->VRefresh) &&
+		    ((fPtr->buildin.Flags & DRM_MODE_FLAG_INTERLACE) ==
+		     (mode->Flags & DRM_MODE_FLAG_INTERLACE)))
+			FBTurboFBListVideoMode(pScrn, mode, "Add mode:");
+		modes = xf86ModesAdd(modes, mode);
+	}
+	return modes;
 }
 
 #ifdef RANDR_GET_CRTC_INTERFACE
@@ -830,6 +977,9 @@ FBDEV_output_init(ScrnInfoPtr pScrn, struct fbdev_lcd_rec *fbdev_lcd, int num)
 		snprintf(name, 32, "Unknown%d-%d", connector->connector_type, connector->connector_type_id);
 	else
 		snprintf(name, 32, "%s-%d", output_names[connector->connector_type], connector->connector_type_id);
+
+        INFO_MSG("Got Connector: %d (id: %d) %s",
+                        num, connector->connector_id, name);
 
 	output = xf86OutputCreate(pScrn, &fbdev_lcd_output_funcs, name);
 	if (!output)

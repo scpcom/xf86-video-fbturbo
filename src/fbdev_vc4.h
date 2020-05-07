@@ -29,6 +29,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef _FBDEV_VC4_H_
 #define _FBDEV_VC4_H_
 
-extern int vc_vchi_tv_get_status( uint32_t *w, uint32_t *h, float *f_r );
+extern int vc_vchi_tv_get_status( uint32_t *w, uint32_t *h, float *f_r, uint16_t *s_m );
 
 #endif /* _FBDEV_VC4_H_ */

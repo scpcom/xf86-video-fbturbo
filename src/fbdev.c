@@ -429,8 +429,6 @@ static Bool FBTurboHWModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode)
 #define FBTurboHWModeInit fbdevHWModeInit
 #endif
 
-void FBTurboFBListVideoMode(ScrnInfoPtr pScrn, DisplayModePtr mode, const char *msg);
-
 static void FBTurboFBSetVideoModes(ScrnInfoPtr pScrn)
 {
 	FBDevPtr fPtr = FBDEVPTR(pScrn);
@@ -445,12 +443,16 @@ static void FBTurboFBSetVideoModes(ScrnInfoPtr pScrn)
 #endif
 		int val = 0;
 		float vrefresh = 60.0;
+		uint16_t interlaced = 0;
 
 		DisplayModePtr fbdev_mode = fbdevHWGetBuildinMode(pScrn);
 
-		if (fbdev_mode && fbdev_mode->VRefresh)
+		if (fbdev_mode)
+			val = fbdev_lcd_vrefresh(fbdev_mode->VRefresh, fbdev_mode->Clock, fbdev_mode->HTotal, fbdev_mode->VTotal, fbdev_mode->VScan, fbdev_mode->Flags);
+
+		if (val > 0)
 		{
-			vrefresh = fbdev_mode->VRefresh;
+			vrefresh = val;
 			INFO_MSG("Got rate %.0f from fbdevHW vrefresh", vrefresh);
 			val = 0;
 		}
@@ -459,7 +461,7 @@ static void FBTurboFBSetVideoModes(ScrnInfoPtr pScrn)
 		else if (parse_text_info("/sys/class/video/frame_rate", "VF.fps=", "%*f panel fps %i,", &val))
 			INFO_MSG("Got rate %i from class/video", val);
 #ifdef HAVE_LIBBCM_HOST
-		else if (vc_vchi_tv_get_status(&v_w, &v_h, &vrefresh))
+		else if (vc_vchi_tv_get_status((uint32_t *)&v_w, (uint32_t *)&v_h, &vrefresh, &interlaced))
 		{
 			INFO_MSG("Got rate %.0f from vchi_tv", vrefresh);
 			val = 0;
@@ -504,7 +506,10 @@ static void FBTurboFBSetVideoModes(ScrnInfoPtr pScrn)
 			if (!fPtr->buildin.VRefresh)
 			{
 				INFO_MSG("buildin has no VRefresh, using xf86CVTMode to create a mode");
-				fbdev_mode = xf86CVTMode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, TRUE, FALSE);
+				fbdev_mode = xf86CVTMode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, FALSE, interlaced);
+				if (fbdev_mode->Clock > 151550)
+					fbdev_mode = xf86CVTMode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, TRUE, interlaced);
+				fbdev_mode->VRefresh = vrefresh;
 				fbdev_copy_mode(fbdev_mode, &fPtr->buildin);
 				fPtr->buildin.type |= M_T_BUILTIN;
 				fbdev_fill_crtc_mode(&fPtr->buildin, fbdev_mode->HDisplay, fbdev_mode->VDisplay, fbdev_mode->VRefresh, M_T_BUILTIN, NULL);

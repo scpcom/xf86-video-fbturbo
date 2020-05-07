@@ -71,22 +71,25 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define LOG_STD(  fmt, arg... )  DEBUG_STR( 0, fmt, ##arg )
 #endif
 
-#define status_mode(tvstate) ""
 
-static int get_status( uint32_t *w, uint32_t *h, float *f_r )
+static int get_status( uint32_t *w, uint32_t *h, float *f_r, uint16_t *s_m)
 {
    TV_DISPLAY_STATE_T tvstate;
    if( vc_tv_get_display_state( &tvstate ) == 0) {
       //The width/height parameters are in the same position in the union
       //for HDMI and SDTV
+      float frame_rate;
       HDMI_PROPERTY_PARAM_T property;
       property.property = HDMI_PROPERTY_PIXEL_CLOCK_TYPE;
       vc_tv_hdmi_get_property(&property);
-      float frame_rate = property.param1 == HDMI_PIXEL_CLOCK_TYPE_NTSC ? tvstate.display.hdmi.frame_rate * (1000.0f/1001.0f) : tvstate.display.hdmi.frame_rate;
+      frame_rate = property.param1 == HDMI_PIXEL_CLOCK_TYPE_NTSC ? tvstate.display.hdmi.frame_rate * (1000.0f/1001.0f) : tvstate.display.hdmi.frame_rate;
 
-      if(tvstate.display.hdmi.width && tvstate.display.hdmi.height) {
-         LOG_STD( "state 0x%x [%s], %ux%u @ %.2fHz, %s", tvstate.state,
-                  status_mode(&tvstate),
+      if (tvstate.display.hdmi.width && tvstate.display.hdmi.height &&
+          (tvstate.state & ( VC_HDMI_HDMI | VC_HDMI_DVI ))) {
+         LOG_STD( "state 0x%x [%s %s (%d)], %ux%u @ %.2fHz, %s", tvstate.state,
+                  (tvstate.state & VC_HDMI_HDMI) ? "HDMI" : "DVI",
+                  HDMI_RES_GROUP_NAME(tvstate.display.hdmi.group),
+                  tvstate.display.hdmi.mode,
                   tvstate.display.hdmi.width, tvstate.display.hdmi.height,
                   frame_rate,
                   tvstate.display.hdmi.scan_mode ? "interlaced" : "progressive" );
@@ -94,10 +97,11 @@ static int get_status( uint32_t *w, uint32_t *h, float *f_r )
          *w = tvstate.display.hdmi.width;
          *h = tvstate.display.hdmi.height;
          *f_r = frame_rate;
+         *s_m = tvstate.display.hdmi.scan_mode;
 
          return 0;
       } else {
-         LOG_STD( "state 0x%x [%s]", tvstate.state, status_mode(&tvstate));
+         LOG_STD( "state 0x%x [%s]", tvstate.state, "");
       }
    } else {
       LOG_STD( "Error getting current display state");
@@ -105,7 +109,7 @@ static int get_status( uint32_t *w, uint32_t *h, float *f_r )
   return 1;
 }
 
-int vc_vchi_tv_get_status( uint32_t *w, uint32_t *h, float *f_r )
+int vc_vchi_tv_get_status( uint32_t *w, uint32_t *h, float *f_r, uint16_t *s_m )
 {
    int32_t ret = 0;
    VCHI_INSTANCE_T    vchi_instance;
@@ -134,9 +138,8 @@ int vc_vchi_tv_get_status( uint32_t *w, uint32_t *h, float *f_r )
    // Initialize the tvservice
    vc_vchi_tv_init( vchi_instance, &vchi_connection, 1 );
 
-   ret = get_status(w, h, f_r);
+   ret = get_status(w, h, f_r, s_m);
 
-err_stop_service:
 //   LOG_INFO( "Stopping tvservice" );
 
    // Stop the tvservice

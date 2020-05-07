@@ -96,6 +96,8 @@ typedef struct {
 #define FBTurboHWPtr FBDevPtr
 #define FBTURBOHWPTR FBDEVPTR
 
+void FBTurboFBListVideoMode(ScrnInfoPtr pScrn, DisplayModePtr mode, const char *msg);
+
 //undefine FBTurboHWLoadPalette fbdevHWLoadPaletteWeak()
 #define FBTurboHWSetVideoModes fbdevHWSetVideoModes
 //undefine FBTurboHWUseBuildinMode fbdevHWUseBuildinMode

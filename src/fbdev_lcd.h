@@ -28,6 +28,10 @@
 #define DPMSModeSuspend    2
 #define DPMSModeOff        3
 
+uint32_t fbdev_lcd_vrefresh(uint32_t m_vrefresh, uint32_t m_clock,
+		uint16_t m_htotal, uint16_t m_vtotal, uint16_t m_vscan,
+		uint32_t m_flags);
+
 extern void fbdev_copy_mode(DisplayModePtr source_mode_ptr, DisplayModePtr mode_ptr);
 extern void fbdev_fill_mode(DisplayModePtr mode_ptr, int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
 extern void fbdev_fill_crtc_mode(DisplayModePtr mode_ptr, int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
