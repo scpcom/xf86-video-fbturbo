@@ -1,0 +1,5 @@
+xserver-xorg-video-fbturbo (1.20140112-1) unstable; urgency=low
+
+  * Initial packaging. Based off 914fb08921
+
+ --  <asb@asbradbury.org>  Wed, 11 Dec 2013 19:50:05 +0000
