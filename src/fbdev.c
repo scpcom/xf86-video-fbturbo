@@ -865,6 +865,7 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	if (!fbdevHWInit(pScrn,NULL,(char*)device))
 		return FALSE;
 	default_depth = fbdevHWGetDepth(pScrn,&fbbpp);
+	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "xf86SetDepthBpp(pScrn, %d, %d, %d, ...)\n", default_depth, default_depth, fbbpp);
 	if (!xf86SetDepthBpp(pScrn, default_depth, default_depth, fbbpp,
 			     Support24bppFb | Support32bppFb | SupportConvert32to24 | SupportConvert24to32))
 		return FALSE;
@@ -1145,11 +1146,19 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	int init_picture = 0;
 	int ret, flags;
 	int type;
+	int depth;
 	const char *accelmethod;
 	cpu_backend_t *cpu_backend;
 	Bool useBackingStore = FALSE, forceBackingStore = FALSE;
 
 	TRACE_ENTER("FBDevScreenInit");
+
+	depth = pScrn->depth;
+#if USE_CRTC_AND_LCD
+	if (pScrn->bitsPerPixel > 25)
+		depth = 24;
+#endif
+
 
 #if DEBUG
 	ErrorF("\tbitsPerPixel=%d, depth=%d, defaultVisual=%s\n"
@@ -1182,29 +1191,19 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	/* mi layer */
 	DEBUG_MSG(1, "miClearVisualTypes");
 	miClearVisualTypes();
-#if USE_CRTC_AND_LCD
-	if (pScrn->bitsPerPixel > 25)
-	{
-		DEBUG_MSG(1, "miSetVisualTypes %i", 32);
-		if (!miSetVisualTypes(32, TrueColorMask, pScrn->rgbBits, TrueColor))
-		{
-			ERROR_MSG("visual type setup failed for %d bits per pixel [1]", pScrn->bitsPerPixel);
-			return FALSE;
-		}
-	} else
-#endif
+
 	if (pScrn->bitsPerPixel > 8) {
-		DEBUG_MSG(1, "miSetVisualTypes %i", pScrn->depth);
-		if (!miSetVisualTypes(pScrn->depth, TrueColorMask, pScrn->rgbBits, TrueColor)) {
+		DEBUG_MSG(1, "miSetVisualTypes %i", depth);
+		if (!miSetVisualTypes(depth, TrueColorMask, pScrn->rgbBits, TrueColor)) {
 			xf86DrvMsg(pScrn->scrnIndex,X_ERROR,"visual type setup failed"
 				   " for %d bits per pixel [1]\n",
 				   pScrn->bitsPerPixel);
 			return FALSE;
 		}
 	} else {
-		DEBUG_MSG(1, "miSetVisualTypes %i", pScrn->depth);
-		if (!miSetVisualTypes(pScrn->depth,
-				      miGetDefaultVisualMask(pScrn->depth),
+		DEBUG_MSG(1, "miSetVisualTypes %i", depth);
+		if (!miSetVisualTypes(depth,
+				      miGetDefaultVisualMask(depth),
 				      pScrn->rgbBits, pScrn->defaultVisual)) {
 			xf86DrvMsg(pScrn->scrnIndex,X_ERROR,"visual type setup failed"
 				   " for %d bits per pixel [2]\n",
