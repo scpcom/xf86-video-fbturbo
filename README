@@ -27,13 +27,13 @@ by themselves. They are nothing else but just a glue between the 3D drivers
 and the X11 window system. Still a poorly implemented glue can easily become
 the source of major performance problems. So it's important to do it right.
 
-This DDX driver provides integration for Mali 400 GPU into Xorg. Any device
-with Mali 400 should have a properly working OpenGL ES 2.0 acceleration if
+This DDX driver provides integration for Mali 400/450/T860 GPU into Xorg. Any device
+with Mali 400/450/T860 should have a properly working OpenGL ES 2.0 acceleration if
 it has Mali/UMP modules in the Linux kernel and libMali.so proprietary
 binary blob installed in the system. Additionally, the hardware overlay
 feature of Allwinner A10/A13/A20 display controller allows to support
 zero-copy OpenGL ES buffer flipping without tearing. The rest of the
-devices with Mali 400 hardware (Exynos4, Rockchip, ...) are expected to
+devices with Mali 400/450/T860 hardware (Exynos4, Rockchip, ...) are expected to
 have roughly the same 3D performance as when using the reference vendor
 provided Xorg DDX driver xf86-video-mali.
 
