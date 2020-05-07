@@ -100,7 +100,7 @@ typedef struct {
 #define SUNXI_VIDEO(p) ((SunxiVideo *) \
                         (FBDEVPTR(p)->SunxiVideo_private))
 
-#define USE_CRTC_AND_LCD 0
+#define USE_CRTC_AND_LCD 1
 
 #define wrap(priv, real, mem, func) {\
 		priv->mem = real->mem; \
