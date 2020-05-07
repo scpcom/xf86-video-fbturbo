@@ -85,12 +85,9 @@ fb_copyarea_t *fb_copyarea_init(const char *device, void *xserver_fbmem)
     copyarea.dy = 0;
     copyarea.width = 1;
     copyarea.height = 1;
+    ctx->do_copyarea = 1;
     if (ioctl(ctx->fd, FBIOCOPYAREA, &copyarea) != 0) {
-#if 0
-        close(ctx->fd);
-        free(ctx);
-        return NULL;
-#endif
+        ctx->do_copyarea = 0;
     }
 
     if (ioctl(ctx->fd, FBIOGET_VSCREENINFO, &fb_var) < 0 ||
@@ -207,6 +204,9 @@ int fb_copyarea_blt(void               *self,
     if (w <= 0 || h <= 0)
         return 1;
 
+    if (!ctx->do_copyarea)
+        return FALLBACK_BLT();
+
     if (src_bpp != dst_bpp || src_bpp != ctx->bits_per_pixel ||
         src_stride != dst_stride || src_stride != ctx->framebuffer_stride ||
         src_bits != dst_bits || src_bits != framebuffer_addr) {
@@ -225,9 +225,5 @@ int fb_copyarea_blt(void               *self,
     if (ioctl(ctx->fd, FBIOCOPYAREA, &copyarea) == 0)
         return 1;
     else
-#if USE_CRTC_AND_LCD
-        return FALLBACK_BLT();
-#else
         return 0;
-#endif
 }

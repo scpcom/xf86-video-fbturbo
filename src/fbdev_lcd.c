@@ -25,9 +25,12 @@
 #endif
 
 #include <errno.h>
+#include <malloc.h>
 #include <sys/ioctl.h>
 #include "xorg-server.h"
 #include "xf86.h"
+#include "X11/Xatom.h"
+#include "xf86drm.h"
 #include "xf86Crtc.h"
 #include "xf86DDC.h"
 #include "xf86drmMode.h"
@@ -74,6 +77,10 @@ struct fbdev_lcd_output_priv {
 	drmModeEncoderPtr *encoders;
 	drmModePropertyBlobPtr edid_blob;
 };
+
+typedef struct {
+    uint32_t    lessee_id;
+} fbdev_lease_private_rec, *fbdev_lease_private_ptr;
 
 static void fbdev_lcd_output_dpms(xf86OutputPtr output, int mode);
 
@@ -177,11 +184,23 @@ static void fbdev_lcd_crtc_commit(xf86CrtcPtr crtc)
 
 static void fbdev_lcd_crtc_gamma_set(xf86CrtcPtr crtc, CARD16 *red, CARD16 *green, CARD16 *blue, int size)
 {
-	IGNORE(crtc);
-	IGNORE(red);
-	IGNORE(green);
-	IGNORE(blue);
-	IGNORE(size);
+	ScrnInfoPtr pScrn = crtc->scrn;
+	struct fbdev_lcd_crtc_private_rec *fbdev_lcd_crtc = crtc->driver_private;
+	struct fbdev_lcd_rec *fbdev_lcd;
+
+	if (!fbdev_lcd_crtc) {
+		INFO_MSG("%s: not a fbdev_lcd crtc", __func__);
+		return;
+	}
+
+	fbdev_lcd = fbdev_lcd_crtc->fbdev_lcd;
+
+	if (fbdev_lcd->isDummy) {
+		return;
+	}
+
+	drmModeCrtcSetGamma(fbdev_lcd->fd, fbdev_lcd_crtc->crtc_id,
+			size, red, green, blue);
 }
 
 static void fbdev_lcd_crtc_set_origin(xf86CrtcPtr crtc, int x, int y)
@@ -331,6 +350,8 @@ fbdev_lcd_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 			if (0 == fb_id)
 				WARNING_MSG("Could not get fb for scanout");
 		}
+
+		DEBUG_MSG(1, "got fb_id %d", fb_id);
 	}
 
 	/* Set the new mode: */
@@ -387,6 +408,9 @@ fbdev_lcd_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		ret = FALSE;
 		goto cleanup;
 	}
+
+	if (crtc->scrn->pScreen)
+		xf86CrtcSetScreenSubpixelOrder(crtc->scrn->pScreen);
 
 	/* get the actual crtc info */
 	newcrtc = drmModeGetCrtc(fbdev_lcd->fd, fbdev_lcd_crtc->crtc_id);
@@ -836,9 +860,39 @@ fbdev_lcd_output_destroy(xf86OutputPtr output)
 	output->driver_private = NULL;
 }
 
+static void
+fbdev_lcd_output_create_resources(xf86OutputPtr output)
+{
+    struct fbdev_lcd_output_priv *fbdev_lcd_output = output->driver_private;
+    int err;
+
+    /* Create CONNECTOR_ID property */
+    {
+        Atom    name = MakeAtom("CONNECTOR_ID", 12, TRUE);
+        INT32   value = fbdev_lcd_output->connector->connector_id;
+
+        if (name != BAD_RESOURCE) {
+            err = RRConfigureOutputProperty(output->randr_output, name,
+                                            FALSE, FALSE, TRUE,
+                                            1, &value);
+            if (err != 0) {
+                xf86DrvMsg(output->scrn->scrnIndex, X_ERROR,
+                           "RRConfigureOutputProperty error, %d\n", err);
+            }
+            err = RRChangeOutputProperty(output->randr_output, name,
+                                         XA_INTEGER, 32, PropModeReplace, 1,
+                                         &value, FALSE, FALSE);
+            if (err != 0) {
+                xf86DrvMsg(output->scrn->scrnIndex, X_ERROR,
+                           "RRChangeOutputProperty error, %d\n", err);
+            }
+        }
+    }
+}
+
 static const xf86OutputFuncsRec fbdev_lcd_output_funcs =
 {
-	.create_resources = NULL,
+	.create_resources = fbdev_lcd_output_create_resources,
 	.dpms = fbdev_lcd_output_dpms,
 	.save = fbdev_lcd_output_save,
 	.restore = fbdev_lcd_output_restore,
@@ -1041,6 +1095,153 @@ exit:
 
 }
 
+static void
+fbdev_validate_leases(ScrnInfoPtr pScrn)
+{
+    ScreenPtr pScreen;
+    rrScrPrivPtr scr_priv;
+    FBDevPtr fPtr;
+    drmModeLesseeListPtr lessees;
+    RRLeasePtr lease, next;
+    int l;
+
+    TRACE_ENTER();
+
+    pScreen = pScrn->pScreen;
+    if (!pScreen)
+        return;
+
+    scr_priv = rrGetScrPriv(pScreen);
+    if (!scr_priv)
+        return;
+
+    fPtr = FBDEVPTR(pScrn);
+    if (!fPtr)
+        return;
+
+    /* We can't talk to the kernel about leases when VT switched */
+    if (!pScrn->vtSema)
+        return;
+
+    lessees = drmModeListLessees(fPtr->drmFD);
+    if (!lessees)
+        return;
+
+    xorg_list_for_each_entry_safe(lease, next, &scr_priv->leases, list) {
+        fbdev_lease_private_ptr lease_private = lease->devPrivate;
+
+        for (l = 0; l < lessees->count; l++) {
+            if (lessees->lessees[l] == lease_private->lessee_id)
+                break;
+        }
+
+        /* check to see if the lease has gone away */
+        if (l == lessees->count) {
+            free(lease_private);
+            lease->devPrivate = NULL;
+            xf86CrtcLeaseTerminated(lease);
+        }
+    }
+
+    free(lessees);
+
+    TRACE_EXIT();
+}
+
+int
+fbdev_create_lease(RRLeasePtr lease, int *fd)
+{
+    ScreenPtr pScreen = lease->screen;
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
+    int ncrtc = lease->numCrtcs;
+    int noutput = lease->numOutputs;
+    int nobjects;
+    int c, o;
+    int i;
+    int lease_fd;
+    uint32_t *objects;
+    fbdev_lease_private_ptr   lease_private;
+
+    nobjects = ncrtc + noutput;
+
+#if 0
+    if (ms->atomic_modeset)
+        nobjects += ncrtc; /* account for planes as well */
+#endif
+
+    if (nobjects == 0)
+        return BadValue;
+
+    lease_private = calloc(1, sizeof (fbdev_lease_private_rec));
+    if (!lease_private)
+        return BadAlloc;
+
+    objects = xallocarray(nobjects, sizeof (uint32_t));
+
+    if (!objects) {
+        free(lease_private);
+        return BadAlloc;
+    }
+
+    i = 0;
+
+    /* Add CRTC and plane ids */
+    for (c = 0; c < ncrtc; c++) {
+        xf86CrtcPtr crtc = lease->crtcs[c]->devPrivate;
+        struct fbdev_lcd_crtc_private_rec *fbdev_lcd_crtc = crtc->driver_private;
+
+        objects[i++] = fbdev_lcd_crtc->crtc_id;
+#if 0
+        if (ms->atomic_modeset)
+            objects[i++] = fbdev_lcd_crtc->plane_id;
+#endif
+    }
+
+    /* Add connector ids */
+
+    for (o = 0; o < noutput; o++) {
+        xf86OutputPtr   output = lease->outputs[o]->devPrivate;
+        struct fbdev_lcd_output_priv *fbdev_lcd_output = output->driver_private;
+
+        objects[i++] = fbdev_lcd_output->connector->connector_id;
+    }
+
+    /* call kernel to create lease */
+    assert (i == nobjects);
+
+    lease_fd = drmModeCreateLease(fPtr->drmFD, objects, nobjects, 0, &lease_private->lessee_id);
+
+    free(objects);
+
+    if (lease_fd < 0) {
+        free(lease_private);
+        return BadMatch;
+    }
+
+    lease->devPrivate = lease_private;
+
+    xf86CrtcLeaseStarted(lease);
+
+    *fd = lease_fd;
+    return Success;
+}
+
+void
+fbdev_terminate_lease(RRLeasePtr lease)
+{
+    ScreenPtr pScreen = lease->screen;
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
+    fbdev_lease_private_ptr lease_private = lease->devPrivate;
+
+    if (drmModeRevokeLease(fPtr->drmFD, lease_private->lessee_id) == 0) {
+        free(lease_private);
+        lease->devPrivate = NULL;
+        xf86CrtcLeaseTerminated(lease);
+    }
+}
+
 Bool FBDEV_lcd_init(ScrnInfoPtr pScrn)
 {
 	FBDevPtr fPtr = FBDEVPTR(pScrn);
@@ -1159,3 +1360,143 @@ Bool FBDEV_lcd_init(ScrnInfoPtr pScrn)
 
 	return TRUE;
 }
+
+Bool
+fbdev_set_desired_modes(ScrnInfoPtr pScrn, FBDevPtr fPtr, Bool set_hw)
+{
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
+    int c;
+
+    TRACE_ENTER();
+
+    for (c = 0; c < config->num_crtc; c++) {
+        xf86CrtcPtr crtc = config->crtc[c];
+        struct fbdev_lcd_crtc_private_rec *fbdev_crtc = crtc->driver_private;
+        xf86OutputPtr output = NULL;
+        int o;
+
+        /* Skip disabled CRTCs */
+        if (!crtc->enabled) {
+            if (set_hw) {
+                drmModeSetCrtc(fPtr->drmFD, fbdev_crtc->crtc_id,
+                               0, 0, 0, NULL, 0, NULL);
+            }
+            continue;
+        }
+
+        if (config->output[config->compat_output]->crtc == crtc)
+            output = config->output[config->compat_output];
+        else {
+            for (o = 0; o < config->num_output; o++)
+		INFO_MSG("crtc %d, output %d", c, o);
+
+                if (config->output[o]->crtc == crtc) {
+                    output = config->output[o];
+                    break;
+                }
+        }
+        /* paranoia */
+        if (!output)
+            continue;
+
+        /* Mark that we'll need to re-set the mode for sure */
+        memset(&crtc->mode, 0, sizeof(crtc->mode));
+        if (!crtc->desiredMode.CrtcHDisplay) {
+            DisplayModePtr mode =
+                xf86OutputFindClosestMode(output, pScrn->currentMode);
+
+            if (!mode)
+                return FALSE;
+            crtc->desiredMode = *mode;
+            crtc->desiredRotation = RR_Rotate_0;
+            crtc->desiredX = 0;
+            crtc->desiredY = 0;
+        }
+
+        if (set_hw) {
+            if (!crtc->funcs->
+                set_mode_major(crtc, &crtc->desiredMode, crtc->desiredRotation,
+                               crtc->desiredX, crtc->desiredY)) {
+			TRACE_EXIT();
+                	return FALSE;
+		}
+        } else {
+            crtc->mode = crtc->desiredMode;
+            crtc->rotation = crtc->desiredRotation;
+            crtc->x = crtc->desiredX;
+            crtc->y = crtc->desiredY;
+            if (!xf86CrtcRotate(crtc))
+                return FALSE;
+        }
+    }
+
+    /* Validate leases on VT re-entry */
+    fbdev_validate_leases(pScrn);
+
+    TRACE_EXIT();
+
+    return TRUE;
+}
+
+/* ugly workaround to see if we can create 32bpp */
+void
+fbdev_get_default_bpp(ScrnInfoPtr pScrn, FBDevPtr fPtr, int *depth,
+                        int *bpp)
+{
+    drmModeResPtr mode_res;
+    uint64_t value;
+#if 0
+    FBTurboBOHandle bo;
+#endif
+    int ret;
+
+    /* 16 is fine */
+    ret = drmGetCap(fPtr->drmFD, DRM_CAP_DUMB_PREFERRED_DEPTH, &value);
+    if (!ret && (value == 16 || value == 8)) {
+        *depth = value;
+        *bpp = value;
+        return;
+    }
+
+    *depth = 24;
+    mode_res = drmModeGetResources(fPtr->drmFD);
+    if (!mode_res)
+        return;
+
+#if 0
+    if (mode_res->min_width == 0)
+        mode_res->min_width = 1;
+    if (mode_res->min_height == 0)
+        mode_res->min_height = 1;
+    /*create a bo */
+    bo = fPtr->bo_ops->new(fPtr->bo_dev, mode_res->min_width, mode_res->min_height,
+                        *depth, 32,
+                        0, FBTURBO_BO_TYPE_DEFAULT);
+
+    if (!bo) {
+        *bpp = 24;
+        goto out;
+    }
+
+    ret = fPtr->bo_ops->add_fb(bo);
+
+    if (ret) {
+        *bpp = 24;
+        fPtr->bo_ops->release(bo);
+        free(bo);
+        goto out;
+    }
+
+    fPtr->bo_ops->rm_fb(bo);
+    *bpp = 32;
+
+    fPtr->bo_ops->release(bo);
+    free(bo);
+ out:
+#else
+    *bpp = 32;
+#endif
+    drmModeFreeResources(mode_res);
+    return;
+}
+

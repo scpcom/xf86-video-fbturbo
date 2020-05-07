@@ -29,6 +29,9 @@
  *	     Michel Dänzer, <michel@tungstengraphics.com>
  */
 
+#ifndef _FBDEV_PRIV_H_
+#define _FBDEV_PRIV_H_
+
 #include "compat-api.h"
 #include <linux/fb.h>
 
@@ -41,6 +44,13 @@
 #include "fb_debug.h"
 #include "fbdev_bo.h"
 #include "fbdev_exa.h"
+
+typedef struct
+{
+    int fd;
+    int fd_ref;
+    unsigned int assigned_crtcs;
+} FBDevEntRec, *FBDevEntPtr;
 
 typedef struct {
 	unsigned char*			fbstart;
@@ -89,6 +99,7 @@ typedef struct {
 	FBTurboBOOps           *bo_ops;
 	FBTurboBOHandle         scanout;
 	void                   *scanout_ptr;
+	Bool                    isFBDevHW;
 } FBDevRec, *FBDevPtr;
 
 #define FBDEVPTR(p) ((FBDevPtr)((p)->driverPrivate))
@@ -205,3 +216,4 @@ Bool InitFBTurboPriv(ScreenPtr pScreen, ScrnInfoPtr pScrn, int fd);
 
 struct FBTurboEXARec *InitNullEXA(ScreenPtr pScreen, ScrnInfoPtr pScrn, int fd);
 
+#endif

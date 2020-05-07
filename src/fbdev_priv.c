@@ -32,12 +32,13 @@ FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap)
 {
 	ScreenPtr pScreen = pPixmap->drawable.pScreen;
 	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
 	FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 	BOInfoPtr bo = NULL;
 
 	HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
 
-	if (!bo)
+	if ((!bo) && (fPtr->UseEXA))
 		bo = exaGetPixmapDriverPrivate(pPixmap);
 
 	return bo;

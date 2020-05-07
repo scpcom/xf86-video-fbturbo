@@ -297,6 +297,7 @@ void *armsoc_bo_map(struct armsoc_bo *bo)
 		struct drm_mode_map_dumb map_dumb;
 		int res;
 
+		memset(&map_dumb, 0, sizeof(map_dumb));
 		map_dumb.handle = bo->handle;
 
 		res = drmIoctl(bo->dev->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_dumb);

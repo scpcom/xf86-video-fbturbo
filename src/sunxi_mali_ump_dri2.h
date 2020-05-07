@@ -166,6 +166,9 @@ typedef struct {
     PostValidateTreeProcPtr PostValidateTree;
     GetImageProcPtr         GetImage;
     DestroyPixmapProcPtr    DestroyPixmap;
+#if 0
+    ModifyPixmapHeaderProcPtr ModifyPixmapHeader;
+#endif
 
     /* the primary UMP secure id for accessing framebuffer */
     FBTurboBOSecureID       ump_fb_secure_id;

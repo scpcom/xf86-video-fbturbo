@@ -44,6 +44,7 @@ typedef struct {
     blt2d_i             blt2d;
     /* Optional fallback interface to handle unsupported operations */
     blt2d_i            *fallback_blt2d;
+    int                 do_copyarea;
 } fb_copyarea_t;
 
 fb_copyarea_t *fb_copyarea_init(const char *fb_device, void *xserver_fbmem);

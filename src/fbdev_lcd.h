@@ -23,6 +23,8 @@
 #ifndef _FBDEV_LCD_H_
 #define _FBDEV_LCD_H_
 
+#include "fbdev_priv.h"
+
 #define DPMSModeOn         0
 #define DPMSModeStandby    1
 #define DPMSModeSuspend    2
@@ -37,7 +39,13 @@ extern void fbdev_fill_mode(DisplayModePtr mode_ptr, int xres, int yres, float v
 extern void fbdev_fill_crtc_mode(DisplayModePtr mode_ptr, int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
 extern DisplayModePtr fbdev_make_mode(int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
 
+extern int fbdev_create_lease(RRLeasePtr lease, int *fd);
+extern void fbdev_terminate_lease(RRLeasePtr lease);
+
 extern Bool FBDEV_lcd_init(ScrnInfoPtr pScrn);
+
+extern Bool fbdev_set_desired_modes(ScrnInfoPtr pScrn, FBDevPtr fPtr, Bool set_hw);
+extern void fbdev_get_default_bpp(ScrnInfoPtr pScrn, FBDevPtr fPtr, int *depth, int *bpp);
 
 #endif /* _FBDEV_LCD_H_ */
 

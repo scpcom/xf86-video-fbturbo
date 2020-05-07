@@ -313,6 +313,8 @@ FBTurboDestroyPixmap(ScreenPtr pScreen, void *driverPriv)
 		unref_bo_info(mali->bo_ops, driverPriv);
 }
 
+static BOInfoPtr MigratePixmapToBO(PixmapPtr pPixmap);
+
 _X_EXPORT Bool
 FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		int depth, int bitsPerPixel, int devKind,
@@ -323,6 +325,11 @@ FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 	FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 	BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
 	size_t datasize;
+
+	if (!bo) {
+		bo = MigratePixmapToBO(pPixmap);
+		//return FALSE;
+	}
 
 	/* Only modify specified fields, keeping all others intact. */
 	if (pPixData)
@@ -408,7 +415,10 @@ FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 	if (!pPixmap->drawable.width || !pPixmap->drawable.height)
 		return TRUE;
 
-	datasize = devKind * height;
+	datasize = pPixmap->devKind * pPixmap->drawable.height;
+	if (bo->addr && bo->addr == fPtr->scanout_ptr)
+		datasize = bo->size;
+
 	if (!bo->addr || bo->size != datasize) {
 		int pitch;
 		size_t size;
@@ -435,7 +445,7 @@ FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		}
 
 		pitch = mali->bo_ops->get_pitch(bo->handle);
-		size = pitch * height;
+		size = pitch * pPixmap->drawable.height;
 
 		bo->size = size;
 		bo->addr = mali->bo_ops->map(bo->handle);
@@ -451,6 +461,8 @@ FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		bo->width = pPixmap->drawable.width;
 		bo->height = pPixmap->drawable.height;
 		bo->bpp = pPixmap->drawable.bitsPerPixel;
+
+		pPixmap->devKind = pitch;
 	}
 
 	FBTurboSetPixmapDriverPrivate(pPixmap, bo);
@@ -472,8 +484,10 @@ FBTurboPrepareAccess(PixmapPtr pPixmap, int index)
         BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
 
 	if (bo) {
-		if (!mali->bo_ops->valid(bo->handle))
+		if (!mali->bo_ops->valid(bo->handle)) {
 			INFO_MSG("%s: no handle", __func__);
+			return TRUE;
+		}
 		if (!bo->addr)
 			INFO_MSG("%s: no addr", __func__);
 
@@ -494,13 +508,17 @@ _X_EXPORT void
 FBTurboFinishAccess(PixmapPtr pPixmap, int index)
 {
 	ScrnInfoPtr pScrn = pix2scrn(pPixmap);
-	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 	BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
 
-	pPixmap->devPrivate.ptr = NULL;
+	if (bo) {
+		if (!mali->bo_ops->valid(bo->handle))
+			return;
 
-	if (fPtr->bo_ops->valid(bo->handle))
-		fPtr->bo_ops->unmap(bo->handle);
+		pPixmap->devPrivate.ptr = NULL;
+
+		mali->bo_ops->unmap(bo->handle);
+	}
 }
 
 _X_EXPORT Bool
@@ -660,11 +678,21 @@ static Bool prepare_flip(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
 	return TRUE;
 }
 
-static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
-                                           unsigned int attachment,
-                                           unsigned int format)
+static inline PixmapPtr
+get_drawable_pixmap(DrawablePtr drawable)
 {
-    ScreenPtr                pScreen  = pDraw->pScreen;
+    ScreenPtr screen = drawable->pScreen;
+
+    if (drawable->type == DRAWABLE_PIXMAP)
+        return (PixmapPtr) drawable;
+    else
+        return screen->GetWindowPixmap((WindowPtr) drawable);
+}
+
+static DRI2Buffer2Ptr
+MaliDRI2CreateBuffer2(ScreenPtr pScreen, DrawablePtr  pDraw,
+                       unsigned int attachment, unsigned int format)
+{
     ScrnInfoPtr              pScrn    = xf86Screens[pScreen->myNum];
     DRI2Buffer2Ptr           buffer;
     BOInfoPtr                privates;
@@ -696,7 +724,10 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
 
     if (buffer->attachment == DRI2BufferFrontLeft && fPtr->UseEXA) {
         pPixmap = draw2pix(pDraw);
-        pPixmap->refcnt++;
+        if (pPixmap && pPixmap->drawable.pScreen != pScreen)
+            pPixmap = NULL;
+        if (pPixmap)
+            pPixmap->refcnt++;
     } 
     else if (pDraw->type == DRAWABLE_PIXMAP) {
         pPixmap = (PixmapPtr)pDraw;
@@ -884,7 +915,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         }
 
         /* Allocate BO */
-        if (fPtr->UseEXA) {
+        if (fPtr->UseDumb) {
             pPixmap = createpix(pDraw);
 
             privates = MigratePixmapToBO(pPixmap);
@@ -932,10 +963,18 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     return validate_dri2buf(buffer);
 }
 
-static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
+static DRI2Buffer2Ptr
+MaliDRI2CreateBuffer(DrawablePtr  pDraw, unsigned int attachment,
+                      unsigned int format)
+{
+    return MaliDRI2CreateBuffer2(pDraw->pScreen, pDraw, attachment,
+                                  format);
+}
+
+static void MaliDRI2DestroyBuffer2(ScreenPtr pScreen, DrawablePtr pDraw,
+                                    DRI2Buffer2Ptr buffer)
 {
     BOInfoPtr privates;
-    ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
@@ -953,34 +992,60 @@ static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
     }
 }
 
+static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
+{
+    MaliDRI2DestroyBuffer2(pDraw->pScreen, pDraw, buffer);
+}
+
 /* Do ordinary copy */
-static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
+static void MaliDRI2CopyRegion2_copy(ScreenPtr        pScreen,
+                                    DrawablePtr      pDraw,
                                     RegionPtr        pRegion,
+                                    DrawablePtr      pDstDraw,
+                                    Bool             translate,
                                     FBTurboBOOps     *bo_ops,
                                     BOInfoPtr        bo)
 {
     GCPtr pGC;
     RegionPtr copyRegion;
-    ScreenPtr pScreen = pDraw->pScreen;
     PixmapPtr pScratchPixmap;
+    DrawablePtr pSrcDraw = NULL;
+    int off_x = 0, off_y = 0;
 
     if (bo_ops->valid(bo->handle)) {
         /* That's a normal BO allocation, not a wrapped framebuffer */
         bo_ops->switch_hw_usage(bo->handle, TRUE);
     }
 
-    pGC = GetScratchGC(pDraw->depth, pScreen);
+    if (translate && pDraw->type == DRAWABLE_WINDOW) {
+#ifdef COMPOSITE
+        PixmapPtr pixmap = get_drawable_pixmap(pDraw);
+        off_x = -pixmap->screen_x;
+        off_y = -pixmap->screen_y;
+#endif
+        off_x += pDraw->x;
+        off_y += pDraw->y;
+    }
+
+    pGC = GetScratchGC(pDstDraw->depth, pScreen);
+
     pScratchPixmap = GetScratchPixmapHeader(pScreen,
                                             bo->width, bo->height,
                                             bo->depth, bo->cpp * 8,
                                             bo->pitch,
                                             bo->addr + bo->offs);
+    pSrcDraw = (DrawablePtr)pScratchPixmap;
+
     copyRegion = REGION_CREATE(pScreen, NULL, 0);
     REGION_COPY(pScreen, copyRegion, pRegion);
+    if (translate)
+        REGION_TRANSLATE(pScreen, copyRegion, off_x, off_y);
     (*pGC->funcs->ChangeClip)(pGC, CT_REGION, copyRegion, 0);
-    ValidateGC(pDraw, pGC);
-    (*pGC->ops->CopyArea)((DrawablePtr)pScratchPixmap, pDraw, pGC, 0, 0,
+    ValidateGC(pDstDraw, pGC);
+
+    (*pGC->ops->CopyArea)(pSrcDraw, pDstDraw, pGC, 0, 0,
                           pDraw->width, pDraw->height, 0, 0);
+
     FreeScratchPixmapHeader(pScratchPixmap);
     FreeScratchGC(pGC);
 
@@ -988,6 +1053,14 @@ static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
         /* That's a normal BO allocation, not a wrapped framebuffer */
         bo_ops->switch_hw_usage(bo->handle, FALSE);
     }
+}
+
+static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
+                                     RegionPtr        pRegion,
+                                     FBTurboBOOps     *bo_ops,
+                                     BOInfoPtr        bo)
+{
+    MaliDRI2CopyRegion2_copy(pDraw->pScreen, pDraw, pRegion, pDraw, FALSE, bo_ops, bo);
 }
 
 static void FlushOverlay(ScreenPtr pScreen)
@@ -1046,17 +1119,26 @@ static void check_rgb_pattern(DRI2WindowStatePtr window_state,
 }
 #endif
 
-static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
-                               RegionPtr     pRegion,
-                               DRI2BufferPtr pDstBuffer,
-                               DRI2BufferPtr pSrcBuffer)
+static void
+MaliDRI2CopyRegion2(ScreenPtr pScreen, DrawablePtr pDraw, RegionPtr pRegion,
+                     DRI2BufferPtr pDstBuffer, DRI2BufferPtr pSrcBuffer)
 {
-    ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     BOInfoPtr bo;
     sunxi_disp_t *disp = SUNXI_DISP(xf86Screens[pScreen->myNum]);
     DRI2WindowStatePtr window_state = FBTurboGetWindowDriverPrivate(pDraw);
+    DrawablePtr pDstDraw = pDraw;
+    Bool translate = FALSE;
+
+    if (pDstBuffer->attachment == DRI2BufferFrontLeft &&
+             pDraw->pScreen != pScreen) {
+        pDstDraw = DRI2UpdatePrime(pDraw, pDstBuffer);
+        if (!pDstDraw)
+            return;
+        if (pDstDraw != pDraw)
+            translate = TRUE;
+    }
 
     if (pDraw->type == DRAWABLE_PIXMAP) {
         DEBUG_MSG(2,"MaliDRI2CopyRegion has been called for pixmap %p", pDraw);
@@ -1169,7 +1251,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
     UpdateOverlay(pScreen);
 
     if (!mali->bOverlayWinEnabled || mali->bo_ops->valid(bo->handle)) {
-        MaliDRI2CopyRegion_copy(pDraw, pRegion, mali->bo_ops, bo);
+        MaliDRI2CopyRegion2_copy(pScreen, pDraw, pRegion, pDstDraw, translate, mali->bo_ops, bo);
         mali->pOverlayDirtyBO = NULL;
         return;
     }
@@ -1187,6 +1269,14 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
         /* FIXME: blocking here for up to 1/60 second is not nice */
         sunxi_wait_for_vsync(disp);
     }
+}
+
+static void
+MaliDRI2CopyRegion(DrawablePtr pDraw, RegionPtr pRegion,
+                    DRI2BufferPtr pDstBuffer, DRI2BufferPtr pSrcBuffer)
+{
+    MaliDRI2CopyRegion2(pDraw->pScreen, pDraw, pRegion, pDstBuffer,
+                         pSrcBuffer);
 }
 
 /************************************************************************/
@@ -1346,6 +1436,7 @@ DestroyPixmap(PixmapPtr pPixmap)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool result;
     BOInfoPtr bo;
@@ -1360,8 +1451,10 @@ DestroyPixmap(PixmapPtr pPixmap)
 
         FBTurboDelPixmapDriverPrivate(pPixmap, bo);
 
-        bo->pPixmap = NULL;
-        unref_bo_info(mali->bo_ops, bo);
+        if (bo->pPixmap == pPixmap)
+            bo->pPixmap = NULL;
+        if (bo->handle != fPtr->scanout)
+            unref_bo_info(mali->bo_ops, bo);
     }
 
     pScreen->DestroyPixmap = mali->DestroyPixmap;
@@ -1372,6 +1465,34 @@ DestroyPixmap(PixmapPtr pPixmap)
 
     return result;
 }
+
+#if 0
+static Bool
+ModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
+                   int depth, int bitsPerPixel, int devKind,
+                   void *pPixData)
+{
+    ScreenPtr pScreen = pPixmap->drawable.pScreen;
+    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
+    Bool result;
+
+    //TRACE_ENTER();
+
+    result = FBTurboModifyPixmapHeader(pPixmap, width, height, depth, bitsPerPixel, devKind, pPixData);
+
+    if (!result) {
+        pScreen->ModifyPixmapHeader = mali->ModifyPixmapHeader;
+        result = (*pScreen->ModifyPixmapHeader) (pPixmap, width, height, depth, bitsPerPixel, devKind, pPixData);
+        mali->ModifyPixmapHeader = pScreen->ModifyPixmapHeader;
+        pScreen->ModifyPixmapHeader = ModifyPixmapHeader;
+    }
+
+    //TRACE_EXIT();
+
+    return result;
+}
+#endif
 
 static void EnableHWCursor(ScrnInfoPtr pScrn)
 {
@@ -1580,7 +1701,13 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     INFO_MSG( "Wait on SwapBuffers? %s",
                bSwapbuffersWait ? "enabled" : "disabled");
 
+#if DRI2INFOREC_VERSION < 9
     info.version = FBTURBO_DRI2INFOREC_VER;
+#else
+    info.version = 9;
+#endif
+
+    INFO_MSG("dri2 version set: %d", info.version);
 
     if (fPtr->drmType > 0) {
         info.driverName = NULL; /* Compat field, unused. */
@@ -1604,6 +1731,10 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     info.CreateBuffer = MaliDRI2CreateBuffer;
     info.DestroyBuffer = MaliDRI2DestroyBuffer;
     info.CopyRegion = MaliDRI2CopyRegion;
+
+    info.CreateBuffer2 = MaliDRI2CreateBuffer2;
+    info.DestroyBuffer2 = MaliDRI2DestroyBuffer2;
+    info.CopyRegion2 = MaliDRI2CopyRegion2;
 
     /* driverNames will be filled in by dri2.c since xorg-server 1.17.x
        maybe this part can be surrounded by 
@@ -1633,6 +1764,11 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
             /* Wrap the current DestroyPixmap function */
             mali->DestroyPixmap = pScreen->DestroyPixmap;
             pScreen->DestroyPixmap = DestroyPixmap;
+#if 0
+            /* Wrap the current ModifyPixmapHeader function */
+            mali->ModifyPixmapHeader = pScreen->ModifyPixmapHeader;
+            pScreen->ModifyPixmapHeader = ModifyPixmapHeader;
+#endif
 	}
 
         /* Wrap hardware cursor callback functions */
@@ -1663,6 +1799,9 @@ void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
         pScreen->PostValidateTree = mali->PostValidateTree;
         pScreen->GetImage         = mali->GetImage;
         pScreen->DestroyPixmap    = mali->DestroyPixmap;
+#if 0
+        pScreen->ModifyPixmapHeader = mali->ModifyPixmapHeader;
+#endif
     }
 
     if (hwc) {
