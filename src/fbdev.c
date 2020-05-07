@@ -1095,6 +1095,21 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 }
 
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
+static void
+FBDevUpdatePacked(ScreenPtr pScreen, shadowBufPtr pBuf)
+{
+	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	if (fPtr->rotate)
+		shadowUpdateRotatePacked(pScreen, pBuf);
+	else
+		shadowUpdatePacked(pScreen, pBuf);
+
+}
+#endif
+
 static Bool
 FBDevCreateScreenResources(ScreenPtr pScreen)
 {
@@ -1112,10 +1127,16 @@ FBDevCreateScreenResources(ScreenPtr pScreen)
 
     pPixmap = pScreen->GetScreenPixmap(pScreen);
 
-    if (!shadowAdd(pScreen, pPixmap, fPtr->rotate ?
+    if(fPtr->shadowFB) {
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
+	if (!shadowAdd(pScreen, pPixmap, FBDevUpdatePacked,
+#else
+	if (!shadowAdd(pScreen, pPixmap, fPtr->rotate ?
 		   shadowUpdateRotatePackedWeak() : shadowUpdatePackedWeak(),
+#endif
 		   FBDevWindowLinear, fPtr->rotate, NULL)) {
-	return FALSE;
+		return FALSE;
+	}
     }
 
     return TRUE;
@@ -1432,7 +1453,9 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	  xf86DrvMsg(pScrn->scrnIndex, X_INFO, "display rotated; disabling DGA\n");
 	  xf86DrvMsg(pScrn->scrnIndex, X_INFO, "using driver rotation; disabling "
 			                "XRandR\n");
+#if ABI_VIDEODRV_VERSION < SET_ABI_VERSION(24, 0)
 	  xf86DisableRandR();
+#endif
 	  if (pScrn->bitsPerPixel == 24)
 	    xf86DrvMsg(pScrn->scrnIndex, X_WARNING, "rotation might be broken at 24 "
                                              "bits per pixel\n");
