@@ -21,8 +21,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef SUNXI_MALI_UMP_DRI2_H
-#define SUNXI_MALI_UMP_DRI2_H
+#ifndef FBTURBO_MALI_DRI2_H
+#define FBTURBO_MALI_DRI2_H
 
 #include <ump/ump.h>
 #include <ump/ump_ref_drv.h>
@@ -161,11 +161,11 @@ typedef struct {
 
     /* Wait for vsync when swapping DRI2 buffers */
     Bool                    bSwapbuffersWait;
-} SunxiMaliDRI2;
+} FBTurboMaliDRI2;
 
-SunxiMaliDRI2 *SunxiMaliDRI2_Init(ScreenPtr pScreen,
+FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseOverlay,
                                   Bool      bSwapbuffersWait);
-void SunxiMaliDRI2_Close(ScreenPtr pScreen);
+void FBTurboMaliDRI2_Close(ScreenPtr pScreen);
 
 #endif

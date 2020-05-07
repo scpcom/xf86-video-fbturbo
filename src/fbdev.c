@@ -1544,11 +1544,11 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 #ifdef HAVE_LIBUMP
 	if (xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2, TRUE)) {
 
-	    fPtr->SunxiMaliDRI2_private = SunxiMaliDRI2_Init(pScreen,
+	    fPtr->FBTurboMaliDRI2_private = FBTurboMaliDRI2_Init(pScreen,
 		xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2_OVERLAY, TRUE),
 		xf86ReturnOptValBool(fPtr->Options, OPTION_SWAPBUFFERS_WAIT, TRUE));
 
-	    if (fPtr->SunxiMaliDRI2_private) {
+	    if (fPtr->FBTurboMaliDRI2_private) {
 		xf86DrvMsg(pScrn->scrnIndex, X_INFO,
 		           "using DRI2 integration for Mali GPU (UMP buffers)\n");
 		xf86DrvMsg(pScrn->scrnIndex, X_INFO,
@@ -1584,10 +1584,10 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 	FBDevPtr fPtr = FBDEVPTR(pScrn);
 
 #ifdef HAVE_LIBUMP
-	if (fPtr->SunxiMaliDRI2_private) {
-	    SunxiMaliDRI2_Close(pScreen);
-	    free(fPtr->SunxiMaliDRI2_private);
-	    fPtr->SunxiMaliDRI2_private = NULL;
+	if (fPtr->FBTurboMaliDRI2_private) {
+	    FBTurboMaliDRI2_Close(pScreen);
+	    free(fPtr->FBTurboMaliDRI2_private);
+	    fPtr->FBTurboMaliDRI2_private = NULL;
 	}
 #endif
 

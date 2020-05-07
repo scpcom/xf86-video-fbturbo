@@ -62,7 +62,7 @@ typedef struct {
 	void				*sunxi_disp_private;
 	void				*fb_copyarea_private;
 	void				*SunxiDispHardwareCursor_private;
-	void				*SunxiMaliDRI2_private;
+	void				*FBTurboMaliDRI2_private;
 	void				*SunxiG2D_private;
 	void				*SunxiVideo_private;
 
@@ -93,8 +93,8 @@ typedef struct {
 #define SUNXI_DISP_HWC(p) ((SunxiDispHardwareCursor *) \
                           (FBDEVPTR(p)->SunxiDispHardwareCursor_private))
 
-#define SUNXI_MALI_UMP_DRI2(p) ((SunxiMaliDRI2 *) \
-                                (FBDEVPTR(p)->SunxiMaliDRI2_private))
+#define FBTURBO_MALI_DRI2(p) ((FBTurboMaliDRI2 *) \
+                                (FBDEVPTR(p)->FBTurboMaliDRI2_private))
 
 #define SUNXI_VIDEO(p) ((SunxiVideo *) \
                         (FBDEVPTR(p)->SunxiVideo_private))

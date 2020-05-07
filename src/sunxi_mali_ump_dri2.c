@@ -185,7 +185,7 @@ FancyTraverseTree(WindowPtr pWin, VisitWindowProcPtr func, pointer data)
 static int
 WindowWalker(WindowPtr pWin, pointer value)
 {
-    SunxiMaliDRI2 *mali = (SunxiMaliDRI2 *)value;
+    FBTurboMaliDRI2 *mali = (FBTurboMaliDRI2 *)value;
 
     if (mali->bWalkingAboveOverlayWin) {
         if (pWin->mapped && pWin->realized && pWin->drawable.class != InputOnly) {
@@ -215,7 +215,7 @@ MigratePixmapToUMP(PixmapPtr pPixmap)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     UMPBufferInfoPtr umpbuf;
     size_t pitch = ((pPixmap->devKind + 7) / 8) * 8;
     size_t size = pitch * pPixmap->drawable.height;
@@ -339,7 +339,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     DRI2Buffer2Ptr           buffer;
     UMPBufferInfoPtr         privates;
     ump_handle               handle;
-    SunxiMaliDRI2           *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2           *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t            *disp = SUNXI_DISP(pScrn);
     Bool                     can_use_overlay = TRUE;
     PixmapPtr                pWindowPixmap;
@@ -578,7 +578,7 @@ static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
     UMPBufferInfoPtr privates;
     ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     if (mali->pOverlayDirtyUMP == buffer->driverPrivate)
         mali->pOverlayDirtyUMP = NULL;
@@ -642,7 +642,7 @@ static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
 static void FlushOverlay(ScreenPtr pScreen)
 {
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     if (mali->pOverlayWin && mali->pOverlayDirtyUMP) {
         DebugMsg("Flushing overlay content from DRI2 buffer to window\n");
@@ -701,7 +701,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
 {
     ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     UMPBufferInfoPtr umpbuf;
     sunxi_disp_t *disp = SUNXI_DISP(xf86Screens[pScreen->myNum]);
     DRI2WindowStatePtr window_state = NULL;
@@ -843,7 +843,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
 static void UpdateOverlay(ScreenPtr pScreen)
 {
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t *disp = SUNXI_DISP(pScrn);
 
     if (!mali->pOverlayWin || !disp)
@@ -917,7 +917,7 @@ DestroyWindow(WindowPtr pWin)
 {
     ScreenPtr pScreen = pWin->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool ret;
     DrawablePtr pDraw = &pWin->drawable;
     DRI2WindowStatePtr window_state = NULL;
@@ -954,7 +954,7 @@ PostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
 {
     ScreenPtr pScreen = pWin ? pWin->drawable.pScreen : pLayerWin->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     if (mali->PostValidateTree) {
         pScreen->PostValidateTree = mali->PostValidateTree;
@@ -976,7 +976,7 @@ GetImage(DrawablePtr pDrawable, int x, int y, int w, int h,
 {
     ScreenPtr pScreen = pDrawable->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     /* FIXME: more precise check */
     if (mali->pOverlayDirtyUMP)
@@ -995,7 +995,7 @@ DestroyPixmap(PixmapPtr pPixmap)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool result;
     UMPBufferInfoPtr umpbuf;
     HASH_FIND_PTR(mali->HashPixmapToUMP, &pPixmap, umpbuf);
@@ -1022,7 +1022,7 @@ DestroyPixmap(PixmapPtr pPixmap)
 
 static void EnableHWCursor(ScrnInfoPtr pScrn)
 {
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     SunxiDispHardwareCursor *hwc = SUNXI_DISP_HWC(pScrn);
 
     if (!mali->bHardwareCursorIsInUse) {
@@ -1042,7 +1042,7 @@ static void EnableHWCursor(ScrnInfoPtr pScrn)
 
 static void DisableHWCursor(ScrnInfoPtr pScrn)
 {
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     SunxiDispHardwareCursor *hwc = SUNXI_DISP_HWC(pScrn);
 
     if (mali->bHardwareCursorIsInUse) {
@@ -1083,13 +1083,13 @@ static const char *driverNamesWithVDPAU[2] = {
     "sunxi" /* DRI2DriverVDPAU */
 };
 
-SunxiMaliDRI2 *SunxiMaliDRI2_Init(ScreenPtr pScreen,
+FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseOverlay,
                                   Bool      bSwapbuffersWait)
 {
     int drm_fd;
     DRI2InfoRec info = { 0 };
-    SunxiMaliDRI2 *mali;
+    FBTurboMaliDRI2 *mali;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     sunxi_disp_t *disp = SUNXI_DISP(pScrn);
     Bool have_sunxi_cedar = TRUE;
@@ -1108,18 +1108,18 @@ SunxiMaliDRI2 *SunxiMaliDRI2_Init(ScreenPtr pScreen,
         return NULL;
 
     if ((drm_fd = drmOpen("mali_drm", NULL)) < 0) {
-        ErrorF("SunxiMaliDRI2_Init: drmOpen failed!\n");
+        ErrorF("FBTurboMaliDRI2_Init: drmOpen failed!\n");
         return NULL;
     }
 
     if (ump_open() != UMP_OK) {
         drmClose(drm_fd);
-        ErrorF("SunxiMaliDRI2_Init: ump_open() != UMP_OK\n");
+        ErrorF("FBTurboMaliDRI2_Init: ump_open() != UMP_OK\n");
         return NULL;
     }
 
-    if (!(mali = calloc(1, sizeof(SunxiMaliDRI2)))) {
-        ErrorF("SunxiMaliDRI2_Init: calloc failed\n");
+    if (!(mali = calloc(1, sizeof(FBTurboMaliDRI2)))) {
+        ErrorF("FBTurboMaliDRI2_Init: calloc failed\n");
         return NULL;
     }
 
@@ -1243,10 +1243,10 @@ SunxiMaliDRI2 *SunxiMaliDRI2_Init(ScreenPtr pScreen,
     }
 }
 
-void SunxiMaliDRI2_Close(ScreenPtr pScreen)
+void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
 {
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiMaliDRI2 *mali = SUNXI_MALI_UMP_DRI2(pScrn);
+    FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     SunxiDispHardwareCursor *hwc = SUNXI_DISP_HWC(pScrn);
 
     /* Unwrap functions */
