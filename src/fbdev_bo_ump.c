@@ -60,7 +60,7 @@ static Bool ump_bo_open(FBTurboBODevice **dev, int drm_fd)
 
 static void ump_bo_close(FBTurboBODevice *dev)
 {
-	/* no-op */
+	ump_close();
 }
 
 static FBTurboBOHandle ump_bo_new(FBTurboBODevice *dev,
@@ -112,6 +112,10 @@ static FBTurboBOHandle ump_bo_new(FBTurboBODevice *dev,
 	priv->original_size = size;
 	priv->ump = ump_ref_drv_allocate(size, constraints);
 
+        if (priv->ump == UMP_INVALID_MEMORY_HANDLE)
+		INFO_STR("%s: could not allocate %zu bytes (constraints %u)",
+			__func__, size, constraints);
+
 	handle = priv;
 
 	return handle;
@@ -135,7 +139,10 @@ static FBTurboBOSecureID ump_bo_secure_id_get(FBTurboBOHandle handle)
 {
 	struct FBTurboUMPBoPrivRec *priv = (struct FBTurboUMPBoPrivRec *)handle;
 
-	return ump_secure_id_get(priv->ump);
+	if (priv->ump != UMP_INVALID_MEMORY_HANDLE)
+		return ump_secure_id_get(priv->ump);
+	else
+		return FBTURBO_BO_INVALID_SECURE_ID;
 }
 
 static void ump_bo_hold(FBTurboBOHandle handle)
@@ -157,17 +164,21 @@ static Bool ump_bo_valid(FBTurboBOHandle handle)
 
 static int ump_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
 {
+	struct FBTurboUMPBoPrivRec *priv = (struct FBTurboUMPBoPrivRec *)handle;
 	int ret = 0;
+
+	if (priv->ump != UMP_INVALID_MEMORY_HANDLE)
+		return ret;
 
 #ifdef HAVE_LIBUMP_CACHE_CONTROL
 	ump_cache_operations_control(UMP_CACHE_OP_START);
 
 	if (bCPU)
 		ret = ump_switch_hw_usage_secure_id(
-			ump_bo_secure_id_get(handle), UMP_USED_BY_CPU);
+			ump_bo_secure_id_get(priv->ump), UMP_USED_BY_CPU);
 	else
 	        ret = ump_switch_hw_usage_secure_id(
-			ump_bo_secure_id_get(handle), UMP_USED_BY_MALI);
+			ump_bo_secure_id_get(priv->ump), UMP_USED_BY_MALI);
 
 	ump_cache_operations_control(UMP_CACHE_OP_FINISH);
 #endif

@@ -313,7 +313,7 @@ fbdev_lcd_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		return TRUE;
 	}
 
-	if (fPtr->bo_ops->valid(fPtr->scanout)) {
+	if (fPtr->bo_ops && fPtr->bo_ops->valid(fPtr->scanout)) {
 		fb_id = fPtr->bo_ops->get_fb(fPtr->scanout);
 
 		if (fb_id == 0) {
