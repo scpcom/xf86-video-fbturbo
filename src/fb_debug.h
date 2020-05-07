@@ -51,6 +51,13 @@
 #define ERROR_MSG(fmt, ...) \
 	do { xf86DrvMsg(pScrn->scrnIndex, X_ERROR, "[%s:%d] Error: " fmt "\n",\
 		                __FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
+#define INFO_STR(fmt, ...) \
+	do { xf86Msg(X_INFO, "FBTURBO: " fmt "\n",\
+		             ##__VA_ARGS__); } while (0)
+#define WARNING_STR(fmt, ...) \
+	do { xf86Msg(X_WARNING, "FBTURBO: " fmt "\n",\
+		             ##__VA_ARGS__); } while (0)
+
 #define ERROR_STR(fmt, ...) \
 	do { xf86Msg(X_ERROR, "FBTURBO: Error: " fmt "\n",\
 		             ##__VA_ARGS__); } while (0)

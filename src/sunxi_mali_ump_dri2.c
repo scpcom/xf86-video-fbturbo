@@ -45,6 +45,13 @@
 #include "sunxi_disp_ioctl.h"
 #include "sunxi_mali_ump_dri2.h"
 
+#define FBTURBO_DRI2INFOREC_VER 4
+
+/* any point to support earlier? */
+#if DRI2INFOREC_VERSION < FBTURBO_DRI2INFOREC_VER
+#       error "Requires newer DRI2"
+#endif
+
 static const uint32_t crc32_table[256] = {
     0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA, 0x076DC419, 0x706AF48F,
     0xE963A535, 0x9E6495A3, 0x0EDB8832, 0x79DCB8A4, 0xE0D5E91E, 0x97D2D988,
@@ -128,6 +135,8 @@ static Bool test_bo_checksum(BOInfoPtr bo)
     return calc_bo_checksum(bo, bo->checksum_seed) == bo->checksum;
 }
 
+static void unref_bo_info(FBTurboBOOps *bo_ops, BOInfoPtr bo);
+
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a)  (sizeof((a)) / sizeof((a)[0]))
 #endif
@@ -206,6 +215,279 @@ WindowWalker(WindowPtr pWin, pointer value)
     return WT_WALKCHILDREN;
 }
 
+/* create the BO */
+_X_EXPORT void *
+FBTurboCreatePixmap2(ScreenPtr pScreen, int width, int height,
+		int depth, int usage_hint, int bitsPerPixel,
+		int *new_fb_pitch)
+{
+    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
+    BOInfoPtr bo;
+    int pitch = 0;
+    size_t size;
+
+    bo = calloc(1, sizeof(BOInfoRec));
+    if (!bo) {
+        ERROR_STR("%s: calloc failed", __func__);
+        return NULL;
+    }
+    bo->refcount = 1;
+    bo->pPixmap = NULL;
+
+    bo->addr = NULL;
+    bo->handle = FBTURBO_BO_INVALID_HANDLE;
+
+    if ((width > 0) && (height > 0)) {
+        bo->handle = fPtr->bo_ops->new(fPtr->bo_dev,
+                                width,
+                                height,
+                                depth,
+                                bitsPerPixel,
+                                usage_hint,
+                                FBTURBO_BO_TYPE_DEFAULT);
+
+        if (!fPtr->bo_ops->valid(bo->handle)) {
+            ERROR_STR("%s: fPtr->bo_ops->new failed", __func__);
+            free(bo);
+            return NULL;
+        }
+    
+        pitch = fPtr->bo_ops->get_pitch(bo->handle);
+
+        bo->addr = fPtr->bo_ops->map(bo->handle);
+    }
+
+    size = pitch * height;
+
+    bo->size = size;
+    bo->depth = depth;
+    bo->width = width;
+    bo->height = height;
+    bo->bpp = bitsPerPixel;
+    bo->usage_hint = usage_hint;
+
+    *new_fb_pitch = pitch;
+
+    return bo;
+}
+
+_X_EXPORT void
+FBTurboDestroyPixmap(ScreenPtr pScreen, void *driverPriv)
+{
+	ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
+	BOInfoPtr bo = driverPriv;
+
+	if (!driverPriv)
+		return;
+
+	if (bo->handle != fPtr->scanout)
+		unref_bo_info(mali->bo_ops, driverPriv);
+}
+
+_X_EXPORT Bool
+FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
+		int depth, int bitsPerPixel, int devKind,
+		pointer pPixData)
+{
+	ScrnInfoPtr pScrn = pix2scrn(pPixmap);
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
+	BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
+	size_t datasize;
+
+	/* Only modify specified fields, keeping all others intact. */
+	if (pPixData)
+		pPixmap->devPrivate.ptr = pPixData;
+
+	if (devKind > 0)
+		pPixmap->devKind = devKind;
+
+	/*
+	 * Someone is messing with the memory allocation. Let's step out of
+	 * the picture.
+	 */
+	
+	if (pPixData && pPixData != bo->addr) {
+	    if (pPixData == fPtr->scanout_ptr) {
+		INFO_MSG("%s: create scanout", __func__);
+	    }
+	    else {
+		if (mali->bo_ops->valid(bo->handle)) {
+			mali->bo_ops->unmap(bo->handle);
+			mali->bo_ops->release(bo->handle);
+			free(bo->handle);
+		}
+		bo->addr = NULL;
+		bo->size = 0;
+		bo->handle = FBTURBO_BO_INVALID_HANDLE;
+
+		/* Returning FALSE calls miModifyPixmapHeader */
+		return FALSE;
+	    }
+	}
+
+	if (depth > 0)
+		pPixmap->drawable.depth = depth;
+
+	if (bitsPerPixel > 0)
+		pPixmap->drawable.bitsPerPixel = bitsPerPixel;
+
+	if (width > 0)
+		pPixmap->drawable.width = width;
+
+	if (height > 0)
+		pPixmap->drawable.height = height;
+
+	/* Replacing the pixmap's current bo with the scanout bo */
+	if (pPixData && pPixData == fPtr->scanout_ptr && bo->handle != fPtr->scanout) {
+		FBTurboBOHandle old_bo = bo->handle;
+
+		INFO_MSG("%s: set bo to scanout", __func__);
+
+		bo->handle = fPtr->scanout;
+		bo->size = mali->bo_ops->get_pitch(bo->handle) * pPixmap->drawable.height;
+		bo->addr = fPtr->scanout_ptr;
+
+		bo->depth = pPixmap->drawable.depth;
+		bo->width = pPixmap->drawable.width;
+		bo->height = pPixmap->drawable.height;
+		bo->bpp = pPixmap->drawable.bitsPerPixel;
+
+		/* pixmap takes a ref on its new bo */
+		mali->bo_ops->hold(bo->handle);
+
+		if (old_bo) {
+			/* We are detaching the old_bo so clear it now. */
+			if (mali->bo_ops->has_dmabuf(old_bo))
+				mali->bo_ops->clear_dmabuf(old_bo);
+			/* pixmap drops ref on previous bo */
+			mali->bo_ops->release(old_bo);
+		}
+	}
+
+	if (!bo->pPixmap)
+		bo->pPixmap = pPixmap;
+	else if (bo->pPixmap != pPixmap)
+		INFO_MSG("%s: priv=%p, Pixmap %p != %p", __func__, bo, bo->pPixmap, pPixmap);
+	
+	/*
+	 * X will sometimes create an empty pixmap (width/height == 0) and then
+	 * use ModifyPixmapHeader to point it at PixData. We'll hit this path
+	 * during the CreatePixmap call. Just return true and skip the allocate
+	 * in this case.
+	 */
+	if (!pPixmap->drawable.width || !pPixmap->drawable.height)
+		return TRUE;
+
+	datasize = devKind * height;
+	if (!bo->addr || bo->size != datasize) {
+		int pitch;
+		size_t size;
+
+		/* re-allocate buffer! */
+		if (mali->bo_ops->valid(bo->handle)) {
+			mali->bo_ops->unmap(bo->handle);
+			mali->bo_ops->release(bo->handle);
+			free(bo->handle);
+		}
+		bo->addr = 0;
+		bo->size = 0;
+		bo->handle = mali->bo_ops->new(mali->bo_dev,
+                                pPixmap->drawable.width,
+                                pPixmap->drawable.height,
+                                pPixmap->drawable.depth,
+                                pPixmap->drawable.bitsPerPixel,
+                                bo->usage_hint,
+                                FBTURBO_BO_TYPE_DEFAULT);
+
+		if (!mali->bo_ops->valid(bo->handle)) {
+			ERROR_STR("%s: mali->bo_ops->new failed", __func__);
+			return FALSE;
+		}
+
+		pitch = mali->bo_ops->get_pitch(bo->handle);
+		size = pitch * height;
+
+		bo->size = size;
+		bo->addr = mali->bo_ops->map(bo->handle);
+
+		if (!bo->addr) {
+			ERROR_MSG("failed to allocate %lu bytes mem",
+					datasize);
+			bo->size = 0;
+			return FALSE;
+		}
+
+		bo->depth = pPixmap->drawable.depth;
+		bo->width = pPixmap->drawable.width;
+		bo->height = pPixmap->drawable.height;
+		bo->bpp = pPixmap->drawable.bitsPerPixel;
+	}
+
+	FBTurboSetPixmapDriverPrivate(pPixmap, bo);
+
+	return TRUE;
+}
+
+_X_EXPORT void
+FBTurboWaitMarker(ScreenPtr pScreen, int marker)
+{
+	/* no-op */
+}
+
+_X_EXPORT Bool
+FBTurboPrepareAccess(PixmapPtr pPixmap, int index)
+{
+        ScrnInfoPtr pScrn = pix2scrn(pPixmap);
+        FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
+        BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
+
+	if (bo) {
+		if (!mali->bo_ops->valid(bo->handle))
+			INFO_MSG("%s: no handle", __func__);
+		if (!bo->addr)
+			INFO_MSG("%s: no addr", __func__);
+
+		bo->BackupDevKind = pPixmap->devKind;
+		bo->BackupDevPrivatePtr = pPixmap->devPrivate.ptr;
+
+		pPixmap->devKind = mali->bo_ops->get_pitch(bo->handle);
+		pPixmap->devPrivate.ptr = mali->bo_ops->map(bo->handle);
+	}
+	else {
+		INFO_MSG("%s: no bo", __func__);
+	}
+
+	return TRUE;
+}
+
+_X_EXPORT void
+FBTurboFinishAccess(PixmapPtr pPixmap, int index)
+{
+	ScrnInfoPtr pScrn = pix2scrn(pPixmap);
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
+
+	pPixmap->devPrivate.ptr = NULL;
+
+	if (fPtr->bo_ops->valid(bo->handle))
+		fPtr->bo_ops->unmap(bo->handle);
+}
+
+_X_EXPORT Bool
+FBTurboPixmapIsOffscreen(PixmapPtr pPixmap)
+{
+        BOInfoPtr bo = FBTurboGetPixmapDriverPrivate(pPixmap);
+	Bool ret;
+
+	ret = (bo && bo->addr);
+
+	return ret;
+}
+
 /* Migrate pixmap to BO */
 static BOInfoPtr
 MigratePixmapToBO(PixmapPtr pPixmap)
@@ -214,51 +496,32 @@ MigratePixmapToBO(PixmapPtr pPixmap)
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     BOInfoPtr bo;
-    size_t pitch = ((pPixmap->devKind + 7) / 8) * 8;
-    size_t size = pitch * pPixmap->drawable.height;
+    int pitch = 0;
 
-    HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
+    bo = FBTurboGetPixmapDriverPrivate(pPixmap);
 
-    if (bo) {
+    if (bo && mali->bo_ops->valid(bo->handle)) {
         DEBUG_MSG(2,"MigratePixmapToBO %p, already exists = %p", pPixmap, bo);
         return bo;
     }
 
-    /* create the BO */
-    bo = calloc(1, sizeof(BOInfoRec));
     if (!bo) {
-        ERROR_MSG("MigratePixmapToBO: calloc failed");
-        return NULL;
+        bo = FBTurboCreatePixmap2(pScreen,
+                 pPixmap->drawable.width, pPixmap->drawable.height,
+                 pPixmap->drawable.depth, pPixmap->usage_hint,
+                 pPixmap->drawable.bitsPerPixel, &pitch);
     }
-    bo->refcount = 1;
-    bo->pPixmap = pPixmap;
-    bo->handle = mali->bo_ops->new(mali->dev,
-                                pPixmap->drawable.width,
-                                pPixmap->drawable.height,
-                                pPixmap->drawable.depth,
-                                pPixmap->drawable.bitsPerPixel,
-                                FBTURBO_BO_TYPE_DEFAULT);
 
-    if (!mali->bo_ops->valid(bo->handle)) {
-        ERROR_MSG("MigratePixmapToBO: mali->bo_ops->new failed");
-        free(bo);
-        return NULL;
-    }
-    bo->size = size;
-    bo->addr = mali->bo_ops->map(bo->handle);
-    bo->depth = pPixmap->drawable.depth;
-    bo->width = pPixmap->drawable.width;
-    bo->height = pPixmap->drawable.height;
-    bo->bpp = pPixmap->drawable.bitsPerPixel;
+    bo->pPixmap = pPixmap;
 
     /* copy the pixel data to the new location */
     if (pitch == pPixmap->devKind) {
-        memcpy(bo->addr, pPixmap->devPrivate.ptr, size);
+        memcpy(bo->addr, pPixmap->devPrivate.ptr, bo->size);
     } else {
         int y;
         for (y = 0; y < bo->height; y++) {
             memcpy(bo->addr + y * pitch, 
-                   (char*)pPixmap->devPrivate.ptr + y * pPixmap->devKind,
+                   (char *)pPixmap->devPrivate.ptr + y * pPixmap->devKind,
                    pPixmap->devKind);
         }
     }
@@ -269,7 +532,7 @@ MigratePixmapToBO(PixmapPtr pPixmap)
     pPixmap->devKind = pitch;
     pPixmap->devPrivate.ptr = bo->addr;
 
-    HASH_ADD_PTR(mali->HashPixmapToBO, pPixmap, bo);
+    FBTurboSetPixmapDriverPrivate(pPixmap, bo);
 
     DEBUG_MSG(2,"MigratePixmapToBO %p, new buf = %p", pPixmap, bo);
     return bo;
@@ -280,13 +543,24 @@ static void UpdateOverlay(ScreenPtr pScreen);
 static void unref_bo_info(FBTurboBOOps *bo_ops, BOInfoPtr bo)
 {
     if (--bo->refcount <= 0) {
+	FBTurboBOHandle old_handle = bo->handle;
+
         DEBUG_STR(2,"unref_bo_info(%p) [refcount=%d, handle=%p]",
                  bo, bo->refcount, bo->handle);
-        if (bo_ops->valid(bo->handle)) {
-            bo_ops->unmap(bo->handle);
-            bo_ops->release(bo->handle);
+
+	//FBTurboDelPixmapDriverPrivate(bo->pPixmap, bo);
+	bo->pPixmap = NULL;
+	bo->addr = NULL;
+	bo->size = 0;
+	bo->handle = FBTURBO_BO_INVALID_HANDLE;
+
+        if (bo_ops->valid(old_handle)) {
+            bo_ops->unmap(old_handle);
+            bo_ops->release(old_handle);
+
+            free(old_handle);
         }
-        free(bo);
+        //free(bo);
     }
     else {
         DEBUG_STR(2,"Reduced bo_info %p refcount to %d",
@@ -345,6 +619,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     FBTurboMaliDRI2         *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t            *disp = SUNXI_DISP(pScrn);
     Bool                     can_use_overlay = TRUE;
+    PixmapPtr                pPixmap = NULL;
     PixmapPtr                pWindowPixmap;
     DRI2WindowStatePtr       window_state = NULL;
     Bool                     need_window_resize_bug_workaround = FALSE;
@@ -353,6 +628,9 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         ERROR_MSG("DRI2CreateBuffer: calloc failed");
         return NULL;
     }
+
+    buffer->attachment    = attachment;
+    buffer->format        = format;
 
     if (pDraw->type == DRAWABLE_WINDOW &&
         (pWindowPixmap = pScreen->GetWindowPixmap((WindowPtr)pDraw)))
@@ -363,10 +641,14 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
                  pWindowPixmap->screen_x, pWindowPixmap->screen_y);
     }
 
+    if (pDraw->type == DRAWABLE_PIXMAP) {
+        pPixmap = (PixmapPtr)pDraw;
+    }
+
     /* If it is a pixmap, just migrate this pixmap to BO */
-    if (pDraw->type == DRAWABLE_PIXMAP)
+    if (pPixmap)
     {
-        if (!(privates = MigratePixmapToBO((PixmapPtr)pDraw))) {
+        if (!(privates = MigratePixmapToBO(pPixmap))) {
             ERROR_MSG("DRI2CreateBuffer: MigratePixmapToBO failed");
             free(buffer);
             return NULL;
@@ -376,8 +658,8 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         buffer->driverPrivate = privates;
         buffer->format        = format;
         buffer->flags         = 0;
-        buffer->cpp           = pDraw->bitsPerPixel / 8;
-        buffer->pitch         = ((PixmapPtr)pDraw)->devKind;
+        buffer->cpp           = pPixmap->drawable.bitsPerPixel / 8;
+        buffer->pitch         = pPixmap->devKind;
         buffer->name = mali->bo_ops->secure_id_get(privates->handle);
 
         DEBUG_MSG(2,"DRI2CreateBuffer pix=%p, buf=%p:%p, att=%d, id=%d:%d, w=%zd, h=%zd, cpp=%d, depth=%d",
@@ -408,6 +690,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     privates->height   = pDraw->height;
     privates->depth    = pDraw->depth;
     privates->bpp      = pDraw->bitsPerPixel;
+    privates->usage_hint = CREATE_PIXMAP_USAGE_BACKING_PIXMAP;
 
     /* We are not interested in anything other than back buffer requests ... */
     if (attachment != DRI2BufferBackLeft || pDraw->type != DRAWABLE_WINDOW) {
@@ -441,11 +724,11 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     }
 
     /* Allocate the DRI2-related window bookkeeping information */
-    HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
+    window_state = FBTurboGetWindowDriverPrivate(pDraw);
     if (!window_state) {
         window_state = calloc(1, sizeof(*window_state));
         window_state->pDraw = pDraw;
-        HASH_ADD_PTR(mali->HashWindowState, pDraw, window_state);
+        FBTurboSetWindowDriverPrivate(pDraw, window_state);
         DEBUG_MSG(2,"DRI2CreateBuffer: Allocate DRI2 bookkeeping for window %p", pDraw);
         if (disp && can_use_overlay) {
             /* erase the offscreen part of the framebuffer */
@@ -542,19 +825,24 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         }
 
         /* Allocate BO */
-        privates->handle = mali->bo_ops->new(mali->dev,
+        privates->handle = mali->bo_ops->new(mali->bo_dev,
                                 privates->width,
                                 privates->height,
                                 privates->depth,
                                 privates->bpp,
+                                privates->usage_hint,
                                 FBTURBO_BO_TYPE_USE_CACHE);
+
 	mali->bo_ops->switch_hw_usage(privates->handle, FALSE);
 
         if (!mali->bo_ops->valid(privates->handle)) {
             ERROR_MSG("DRI2CreateBuffer: Failed to allocate BO (size=%d)",
                    (int)privates->size);
         }
-        privates->addr = mali->bo_ops->map(privates->handle);
+
+        if (!privates->addr)
+            privates->addr = mali->bo_ops->map(privates->handle);
+
         buffer->name = mali->bo_ops->secure_id_get(privates->handle);
         buffer->flags = 0;
 
@@ -697,8 +985,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     BOInfoPtr bo;
     sunxi_disp_t *disp = SUNXI_DISP(xf86Screens[pScreen->myNum]);
-    DRI2WindowStatePtr window_state = NULL;
-    HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
+    DRI2WindowStatePtr window_state = FBTurboGetWindowDriverPrivate(pDraw);
 
     if (pDraw->type == DRAWABLE_PIXMAP) {
         DEBUG_MSG(2,"MaliDRI2CopyRegion has been called for pixmap %p", pDraw);
@@ -913,11 +1200,11 @@ DestroyWindow(WindowPtr pWin)
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool ret;
     DrawablePtr pDraw = &pWin->drawable;
-    DRI2WindowStatePtr window_state = NULL;
-    HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
+    DRI2WindowStatePtr window_state = FBTurboGetWindowDriverPrivate(pDraw);
+
     if (window_state) {
         DEBUG_MSG(2,"Free DRI2 bookkeeping for window %p", pWin);
-        HASH_DEL(mali->HashWindowState, window_state);
+        FBTurboDelWindowDriverPrivate(pDraw, window_state);
         if (window_state->bo_mem_ptr)
             unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
         if (window_state->bo_back_ptr)
@@ -991,7 +1278,8 @@ DestroyPixmap(PixmapPtr pPixmap)
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool result;
     BOInfoPtr bo;
-    HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
+
+    bo = FBTurboGetPixmapDriverPrivate(pPixmap);
 
     if (bo) {
         DEBUG_MSG(2,"DestroyPixmap %p for migrated BO pixmap (BO=%p)", pPixmap, bo);
@@ -999,7 +1287,8 @@ DestroyPixmap(PixmapPtr pPixmap)
         pPixmap->devKind = bo->BackupDevKind;
         pPixmap->devPrivate.ptr = bo->BackupDevPrivatePtr;
 
-        HASH_DEL(mali->HashPixmapToBO, bo);
+        FBTurboDelPixmapDriverPrivate(pPixmap, bo);
+
         bo->pPixmap = NULL;
         unref_bo_info(mali->bo_ops, bo);
     }
@@ -1057,6 +1346,11 @@ static const char *driverNames[1] = {
     "lima" /* DRI2DriverDRI */
 };
 
+static const char *driverNamesOther[2] = {
+    "fbturbo", /* DRI2DriverDRI */
+    "v4l2_request" /* DRI2DriverV4L2Request */
+};
+
 static const char *driverNamesMeson[2] = {
     "meson", /* DRI2DriverDRI */
     "v4l2_request" /* DRI2DriverV4L2Request */
@@ -1077,57 +1371,30 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bSwapbuffersWait,
                                   Bool      bUseDumb)
 {
-    int drm_fd;
-    int drm_type = 0;
     DRI2InfoRec info = { 0 };
     FBTurboMaliDRI2 *mali;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
     sunxi_disp_t *disp = SUNXI_DISP(pScrn);
-    Bool have_sunxi_cedar = TRUE;
 
-    if (!xf86LoadKernelModule("mali"))
-        INFO_MSG( "can't load 'mali' kernel module");
-    if (!xf86LoadKernelModule("mali_drm"))
-        INFO_MSG( "can't load 'mali_drm' kernel module");
-
-    if (!xf86LoadKernelModule("sunxi_cedar_mod")) {
-        INFO_MSG( "can't load 'sunxi_cedar_mod' kernel module");
-        have_sunxi_cedar = FALSE;
-    }
-
-    if (!xf86LoadSubModule(xf86Screens[pScreen->myNum], "dri2"))
-        return NULL;
-
-    if ((drm_fd = drmOpen("mali_drm", NULL)) < 0) {
-        drm_type = 1;
-        drm_fd = drmOpen("sun4i-drm", NULL);
-    }
-
-    if (drm_fd < 0) {
-        drm_type = 2;
-        drm_fd = drmOpen("meson", NULL);
-    }
-
-    if (drm_fd < 0) {
+    if (fPtr->drmFD < 0) {
         ERROR_MSG("FBTurboMaliDRI2_Init: drmOpen failed!");
         return NULL;
     }
-
 
     if (!(mali = calloc(1, sizeof(FBTurboMaliDRI2)))) {
         ERROR_MSG("FBTurboMaliDRI2_Init: calloc failed");
         return NULL;
     }
 
-    if (bUseDumb)
-        mali->bo_ops = &dumb_bo_ops;
-    else
-        mali->bo_ops = &ump_bo_ops;
+    mali->bo_dev = fPtr->bo_dev;
+    mali->bo_ops = fPtr->bo_ops;
 
-    if (!mali->bo_ops->open(&mali->dev, drm_fd)) {
-        drmClose(drm_fd);
+    if (!mali->bo_ops) {
+        drmClose(fPtr->drmFD);
+        fPtr->drmFD = -1;
         free(mali);
-        ERROR_MSG("FBTurboMaliDRI2_Init: mali->bo_ops->open() failed");
+        ERROR_MSG("FBTurboMaliDRI2_Init: mali->bo_ops is not set");
         return NULL;
     }
 
@@ -1139,7 +1406,7 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
             ioctl(disp->fd_fb, GET_UMP_SECURE_ID_BUF1, &mali->ump_alternative_fb_secure_id);
 
         /* Try to allocate a small dummy BO to secure id 2 */
-        mali->bo_null_handle1 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32,
+        mali->bo_null_handle1 = mali->bo_ops->new(mali->bo_dev, 32, 32, 0, 32, 0,
                                                FBTURBO_BO_TYPE_NONE);
         if (mali->bo_ops->valid(mali->bo_null_handle1))
             mali->bo_null_secure_id = mali->bo_ops->secure_id_get(mali->bo_null_handle1);
@@ -1182,12 +1449,12 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     }
     else {
         /* Try to allocate small dummy BOs to secure id 1 and 2 */
-        mali->bo_null_handle1 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32, 
+        mali->bo_null_handle1 = mali->bo_ops->new(mali->bo_dev, 32, 32, 0, 32, 0, 
                                                FBTURBO_BO_TYPE_NONE);
         if (mali->bo_ops->valid(mali->bo_null_handle1))
             mali->bo_null_secure_id = mali->bo_ops->secure_id_get(mali->bo_null_handle1);
 
-        mali->bo_null_handle2 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32, 
+        mali->bo_null_handle2 = mali->bo_ops->new(mali->bo_dev, 32, 32, 0, 32, 0, 
                                                FBTURBO_BO_TYPE_NONE);
 
         /* No UMP wrappers for the framebuffer are available */
@@ -1212,19 +1479,24 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     INFO_MSG( "Wait on SwapBuffers? %s",
                bSwapbuffersWait ? "enabled" : "disabled");
 
-    info.version = 4;
+    info.version = FBTURBO_DRI2INFOREC_VER;
 
-    if (drm_type == 2) {
+    if (fPtr->drmType == 3) {
+        info.numDrivers = ARRAY_SIZE(driverNamesOther);
+        info.driverName = driverNamesOther[0];
+        info.driverNames = driverNamesOther;
+    }
+    else if (fPtr->drmType == 2) {
         info.numDrivers = ARRAY_SIZE(driverNamesMeson);
         info.driverName = driverNamesMeson[0];
         info.driverNames = driverNamesMeson;
     }
-    else if (drm_type == 1) {
+    else if (fPtr->drmType == 1) {
         info.numDrivers = ARRAY_SIZE(driverNamesSun4i);
         info.driverName = driverNamesSun4i[0];
         info.driverNames = driverNamesSun4i;
     }
-    else if (have_sunxi_cedar) {
+    else if (fPtr->have_sunxi_cedar) {
         info.numDrivers = ARRAY_SIZE(driverNamesWithVDPAU);
         info.driverName = driverNamesWithVDPAU[0];
         info.driverNames = driverNamesWithVDPAU;
@@ -1234,15 +1506,16 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         info.driverName = driverNames[0];
         info.driverNames = driverNames;
     }
-    info.deviceName = drmGetDeviceNameFromFd(drm_fd);
-    info.fd = drm_fd;
+    info.deviceName = drmGetDeviceNameFromFd(fPtr->drmFD);
+    info.fd = fPtr->drmFD;
 
     info.CreateBuffer = MaliDRI2CreateBuffer;
     info.DestroyBuffer = MaliDRI2DestroyBuffer;
     info.CopyRegion = MaliDRI2CopyRegion;
 
     if (!DRI2ScreenInit(pScreen, &info)) {
-        drmClose(drm_fd);
+        drmClose(fPtr->drmFD);
+        fPtr->drmFD = -1;
         free(mali);
         return NULL;
     }
@@ -1270,7 +1543,7 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
             hwc->DisableHWCursor = DisableHWCursor;
         }
 
-        mali->drm_fd = drm_fd;
+        mali->drm_fd = fPtr->drmFD;
         mali->bSwapbuffersWait = bSwapbuffersWait;
         return mali;
     }
@@ -1279,6 +1552,7 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
 void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
 {
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     SunxiDispHardwareCursor *hwc = SUNXI_DISP_HWC(pScrn);
 
@@ -1298,8 +1572,7 @@ void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
     if (mali->bo_ops->valid(mali->bo_null_handle2))
         mali->bo_ops->release(mali->bo_null_handle2);
 
-    mali->bo_ops->close(mali->dev);
-
     drmClose(mali->drm_fd);
+    fPtr->drmFD = -1;
     DRI2CloseScreen(pScreen);
 }

@@ -39,6 +39,7 @@
 #endif
 
 #include "fb_debug.h"
+#include "fbdev_bo.h"
 
 typedef struct {
 	unsigned char*			fbstart;
@@ -67,10 +68,25 @@ typedef struct {
 	void				*SunxiG2D_private;
 	void				*SunxiVideo_private;
 
+	int crtcNum;
+	int drmFD;
+	int drmType;
+	Bool have_sunxi_cedar;
+
         int    fb_lcd_fd;
         struct fb_fix_screeninfo fb_lcd_fix;
         struct fb_var_screeninfo fb_lcd_var;
         DisplayModeRec buildin;
+
+	/** user-configurable option: */
+	Bool				NoFlip;
+	Bool				UseDumb;
+	Bool				UseEXA;
+
+	FBTurboBODevice        *bo_dev;
+	FBTurboBOOps           *bo_ops;
+	FBTurboBOHandle         scanout;
+	void                   *scanout_ptr;
 } FBDevRec, *FBDevPtr;
 
 #define FBDEVPTR(p) ((FBDevPtr)((p)->driverPrivate))
@@ -78,7 +94,7 @@ typedef struct {
 #define FBTurboHWPtr FBDevPtr
 #define FBTURBOHWPTR FBDEVPTR
 
-#define FBTurboHWLoadPalette fbdevHWLoadPaletteWeak()
+//undefine FBTurboHWLoadPalette fbdevHWLoadPaletteWeak()
 #define FBTurboHWSetVideoModes fbdevHWSetVideoModes
 //undefine FBTurboHWUseBuildinMode fbdevHWUseBuildinMode
 
@@ -102,6 +118,10 @@ typedef struct {
 
 #define USE_CRTC_AND_LCD 1
 
+#ifdef HAS_DIXREGISTERPRIVATEKEY
+#define USE_DIX_PRIVATE 1
+#endif
+
 #define wrap(priv, real, mem, func) {\
 		priv->mem = real->mem; \
 		real->mem = func; \
@@ -116,4 +136,64 @@ typedef struct {
 		priv->mem = real->mem; \
 		real->mem = tmp; \
 }
+
+#ifdef USE_DIX_PRIVATE
+typedef struct {
+    DevPrivateKeyRec pixmapPrivateKeyRec;
+    DevPrivateKeyRec windowPrivateKeyRec;
+} FBTurboDixScreenPrivRec, *FBTurboDixScreenPrivPtr;
+
+extern DevPrivateKeyRec FBTurboScreenPrivateKeyRec;
+
+#define FBTurboScreenPrivateKey (&FBTurboScreenPrivateKeyRec)
+
+#define FBTurboGetScreenPriv(s) ((FBTurboDixScreenPrivPtr)dixGetPrivate(&(s)->devPrivates, FBTurboScreenPrivateKey))
+#define FBTurboScreenPriv(s)	FBTurboDixScreenPrivPtr pFBTurboScreen = FBTurboGetScreenPriv(s)
+
+typedef struct {
+    void *driverPriv;
+} FBTurboDixPixmapPrivRec, *FBTurboDixPixmapPrivPtr;
+
+#define FBTurboGetPixmapPriv(p) ((FBTurboDixPixmapPrivPtr)dixGetPrivateAddr(&(p)->devPrivates, &FBTurboGetScreenPriv((p)->drawable.pScreen)->pixmapPrivateKeyRec))
+#define FBTurboPixmapPriv(p)	FBTurboDixPixmapPrivPtr pFBTurboPixmap = FBTurboGetPixmapPriv(p)
+
+typedef struct {
+    void *driverPriv;
+} FBTurboDixWindowPrivRec, *FBTurboDixWindowPrivPtr;
+
+#define FBTurboGetWindowPriv(p) ((FBTurboDixWindowPrivPtr)dixGetPrivateAddr(&(p)->devPrivates, &FBTurboGetScreenPriv((p)->drawable.pScreen)->windowPrivateKeyRec))
+#define FBTurboWindowPriv(p)	FBTurboDixWindowPrivPtr pFBTurboWindow = FBTurboGetWindowPriv(p)
+#endif
+
+static inline ScrnInfoPtr
+pix2scrn(PixmapPtr pPixmap)
+{
+	ScreenPtr pScreen = (pPixmap)->drawable.pScreen;
+	return xf86ScreenToScrn(pScreen);
+}
+
+static inline PixmapPtr
+draw2pix(DrawablePtr pDraw)
+{
+	if (!pDraw)
+		return NULL;
+	else if (pDraw->type == DRAWABLE_WINDOW)
+		return pDraw->pScreen->GetWindowPixmap((WindowPtr)pDraw);
+	else
+		return (PixmapPtr)pDraw;
+}
+
+void *FBTurboGetPixmapDriverPrivate(PixmapPtr pPixmap);
+
+void FBTurboSetPixmapDriverPrivate(PixmapPtr pPixmap, void* ptr);
+
+void FBTurboDelPixmapDriverPrivate(PixmapPtr pPixmap, void* ptr);
+
+void *FBTurboGetWindowDriverPrivate(DrawablePtr pDraw);
+
+void FBTurboSetWindowDriverPrivate(DrawablePtr pDraw, void* ptr);
+
+void FBTurboDelWindowDriverPrivate(DrawablePtr pDraw, void* ptr);
+
+Bool InitFBTurboPriv(ScreenPtr pScreen, ScrnInfoPtr pScrn, int fd);
 

@@ -53,10 +53,10 @@ fbturbo_drv_la_SOURCES = \
          backing_store_tuner.h \
          interfaces.h \
          fbdev.c \
+         fbdev_priv.c \
          fbdev_priv.h \
          fb_debug.h \
          fbdev_bo_dumb.c \
-         fbdev_bo_ump.c \
          fbdev_bo.h \
          fbdev_lcd.c \
          fbdev_lcd.h \
@@ -78,6 +78,9 @@ endif
 
 if HAVE_LIBUMP
 fbturbo_drv_la_SOURCES += \
+         fbdev_bo_ump.c
+endif
+
+fbturbo_drv_la_SOURCES += \
          sunxi_mali_ump_dri2.c \
          sunxi_mali_ump_dri2.h
-endif

@@ -45,6 +45,8 @@
 #define FBTURBO_BO_TYPE_DEFAULT 1
 #define FBTURBO_BO_TYPE_USE_CACHE 2
 
+#define ARMSOC_CREATE_PIXMAP_SCANOUT 0x80000000
+
 struct fbturbo_bo_ops {
 	Bool (*open)(FBTurboBODevice **dev, int drm_fd);
 	void (*close)(FBTurboBODevice *dev);
@@ -52,6 +54,7 @@ struct fbturbo_bo_ops {
 	FBTurboBOHandle (*new)(FBTurboBODevice *dev,
 						   uint32_t width,
 						   uint32_t height, uint8_t depth, uint8_t bpp,
+						   int usage_hint,
 						   FBTurboBOUsage usage);
 
 	void *(*map)(FBTurboBOHandle handle);
@@ -60,6 +63,7 @@ struct fbturbo_bo_ops {
 
 	FBTurboBOSecureID (*secure_id_get)(FBTurboBOHandle handle);
 
+	void (*hold)(FBTurboBOHandle handle);
 	void (*release)(FBTurboBOHandle handle);
 
 	Bool (*valid)(FBTurboBOHandle handle);
@@ -67,9 +71,29 @@ struct fbturbo_bo_ops {
 	int (*switch_hw_usage)(FBTurboBOHandle handle, Bool bCPU);
 
 	unsigned long (*get_size_from_secure_id)(FBTurboBOSecureID secure_id);
+
+	uint32_t (*get_width)(FBTurboBOHandle handle);
+	uint32_t (*get_height)(FBTurboBOHandle handle);
+	uint8_t (*get_depth)(FBTurboBOHandle handle);
+	uint32_t (*get_bpp)(FBTurboBOHandle handle);
+	int (*get_pitch)(FBTurboBOHandle handle);
+
+	int (*clear)(FBTurboBOHandle handle);
+	int (*resize)(FBTurboBOHandle handle, uint32_t new_width,
+					      uint32_t new_height);
+
+	int (*set_dmabuf)(FBTurboBOHandle handle);
+	void (*clear_dmabuf)(FBTurboBOHandle handle);
+	int (*has_dmabuf)(FBTurboBOHandle handle);
+
+	int (*add_fb)(FBTurboBOHandle handle);
+	int (*rm_fb)(FBTurboBOHandle handle);
+	uint32_t (*get_fb)(FBTurboBOHandle handle);
 };
 
 extern struct fbturbo_bo_ops dumb_bo_ops;
+#ifdef HAVE_LIBUMP
 extern struct fbturbo_bo_ops ump_bo_ops;
+#endif
 
 #endif

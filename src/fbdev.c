@@ -53,6 +53,7 @@
 #include "xf86cmap.h"
 #include "shadow.h"
 #include "dgaproc.h"
+#include "xf86drm.h"
 #include "xf86Crtc.h"
 #include "xf86RandR12.h"
 
@@ -71,9 +72,7 @@
 #include "fbdev_vc4.h"
 #endif
 
-#ifdef HAVE_LIBUMP
 #include "sunxi_mali_ump_dri2.h"
-#endif
 
 /* for visuals */
 #include "fb.h"
@@ -126,6 +125,7 @@ static Bool	FBDevDGAInit(ScrnInfoPtr pScrn, ScreenPtr pScreen);
 static Bool	FBDevDriverFunc(ScrnInfoPtr pScrn, xorgDriverFuncOp op,
 				pointer ptr);
 
+#define FBTurboHWLoadPalette fbdevHWLoadPaletteWeak()
 
 enum { FBDEV_ROTATE_NONE=0, FBDEV_ROTATE_CW=270, FBDEV_ROTATE_UD=180, FBDEV_ROTATE_CCW=90 };
 
@@ -137,6 +137,8 @@ enum { FBDEV_ROTATE_NONE=0, FBDEV_ROTATE_CW=270, FBDEV_ROTATE_UD=180, FBDEV_ROTA
  * choice made in the first PreInit.
  */
 static int pix24bpp = 0;
+
+#define DRM_DEVICE "/dev/dri/card%d"
 
 #define FBDEV_VERSION		4000
 #define FBDEV_NAME		"FBTURBO"
@@ -632,6 +634,240 @@ static void FBTurboHWUseBuildinMode(ScrnInfoPtr pScrn)
 }
 #endif
 
+/**
+ * Helper functions for sharing a DRM connection across screens.
+ */
+static struct FBTurboConnection {
+	const char *driver_name;
+	const char *bus_id;
+	unsigned int card_num;
+	int fd;
+	int open_count;
+	int master_count;
+} connection = {NULL, NULL, 0, -1, 0, 0};
+
+static int
+FBTurboSetDRMMaster(void)
+{
+	int ret = 0;
+
+	assert(connection.fd >= 0);
+
+	if (!connection.master_count)
+		ret = drmSetMaster(connection.fd);
+
+	if (!ret)
+		connection.master_count++;
+
+	return ret;
+}
+
+static int
+FBTurboDropDRMMaster(void)
+{
+	int ret = 0;
+
+	assert(connection.fd >= 0);
+	assert(connection.master_count > 0);
+
+	if (1 == connection.master_count)
+		ret = drmDropMaster(connection.fd);
+
+	if (!ret)
+		connection.master_count--;
+
+	return ret;
+}
+
+static Bool
+FBTurboOpenDRMCard(ScrnInfoPtr pScrn)
+{
+    int drm_fd;
+    int drm_type = 0;
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
+    Bool have_sunxi_cedar = TRUE;
+
+    if (!xf86LoadKernelModule("mali"))
+        INFO_MSG("can't load 'mali' kernel module");
+    if (!xf86LoadKernelModule("mali_drm"))
+        INFO_MSG("can't load 'mali_drm' kernel module");
+
+    if (!xf86LoadKernelModule("sunxi_cedar_mod")) {
+        INFO_MSG("can't load 'sunxi_cedar_mod' kernel module");
+        have_sunxi_cedar = FALSE;
+    }
+
+    fPtr->drmFD = -1;
+    fPtr->drmType = -1;
+    fPtr->have_sunxi_cedar = have_sunxi_cedar;
+
+    if (!xf86LoadSubModule(pScrn, "dri2"))
+        return FALSE;
+
+    if ((drm_fd = drmOpen("mali_drm", NULL)) < 0) {
+        drm_type = 1;
+        drm_fd = drmOpen("sun4i-drm", NULL);
+    }
+
+    if (drm_fd < 0) {
+        drm_type = 2;
+        drm_fd = drmOpen("meson", NULL);
+    }
+
+    if (drm_fd < 0) {
+	char filename[32];
+
+	drm_type = 3;
+
+	/* open with card_num */
+	snprintf(filename, sizeof(filename),
+			DRM_DEVICE, connection.card_num);
+	INFO_STR(
+			"No BusID or DriverName specified - opening %s",
+			filename);
+	drm_fd = open(filename, O_RDWR, 0);
+    }
+
+    if (drm_fd < 0) {
+        ERROR_STR("%s: drmOpen failed!", __func__);
+        return FALSE;
+    }
+
+    fPtr->drmFD = drm_fd;
+    fPtr->drmType = drm_type;
+
+    return TRUE;
+}
+
+static Bool
+FBTurboOpenDRM(ScrnInfoPtr pScrn)
+{
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	drmSetVersion sv;
+	int err;
+
+	if (connection.fd < 0) {
+		assert(!connection.open_count);
+		assert(!connection.master_count);
+		FBTurboOpenDRMCard(pScrn);
+		if (fPtr->drmFD < 0)
+			return FALSE;
+		/* Check that what we are or can become drm master by
+		 * attempting a drmSetInterfaceVersion(). If successful
+		 * this leaves us as master.
+		 * (see DRIOpenDRMMaster() in DRI1)
+		 */
+		sv.drm_di_major = 1;
+		sv.drm_di_minor = 1;
+		sv.drm_dd_major = -1;
+		sv.drm_dd_minor = -1;
+		err = drmSetInterfaceVersion(fPtr->drmFD, &sv);
+		if (err != 0) {
+			ERROR_MSG("Cannot set the DRM interface version.");
+			drmClose(fPtr->drmFD);
+			fPtr->drmFD = -1;
+			return FALSE;
+		}
+		connection.fd = fPtr->drmFD;
+		connection.open_count = 1;
+		connection.master_count = 1;
+	} else {
+		assert(connection.open_count);
+		connection.open_count++;
+		connection.master_count++;
+		fPtr->drmFD = connection.fd;
+	}
+
+	return TRUE;
+}
+
+/**
+ * The driver's SwitchMode() function.  Initialize the new mode for the
+ * Screen.
+ */
+static Bool
+FBTurboSwitchMode(SWITCH_MODE_ARGS_DECL)
+{
+	SCRN_INFO_PTR(arg);
+	return xf86SetSingleMode(pScrn, mode, RR_Rotate_0);
+}
+
+
+
+/**
+ * The driver's AdjustFrame() function.  For cases where the frame buffer is
+ * larger than the monitor resolution, this function can pan around the frame
+ * buffer within the "viewport" of the monitor.
+ */
+static void
+FBTurboAdjustFrame(ADJUST_FRAME_ARGS_DECL)
+{
+	IGNORE(arg);
+}
+
+
+
+/**
+ * The driver's EnterVT() function.  This is called at server startup time, and
+ * when the X server takes over the virtual terminal from the console.  As
+ * such, it may need to save the current (i.e. console) HW state, and set the
+ * HW state as needed by the X server.
+ */
+static Bool
+FBTurboEnterVT(VT_FUNC_ARGS_DECL)
+{
+	SCRN_INFO_PTR(arg);
+	int i, ret;
+
+	TRACE_ENTER();
+
+	for (i = 1; i < currentMaxClients; i++) {
+		if (clients[i] && !clients[i]->clientGone)
+			AttendClient(clients[i]);
+	}
+
+	ret = FBTurboSetDRMMaster();
+	if (ret) {
+		ERROR_MSG("Cannot get DRM master: %s", strerror(errno));
+		return FALSE;
+	}
+
+	if (!xf86SetDesiredModes(pScrn)) {
+		ERROR_MSG("xf86SetDesiredModes() failed!");
+		return FALSE;
+	}
+
+	TRACE_EXIT();
+	return TRUE;
+}
+
+
+
+/**
+ * The driver's LeaveVT() function.  This is called when the X server
+ * temporarily gives up the virtual terminal to the console.  As such, it may
+ * need to restore the console's HW state.
+ */
+static void
+FBTurboLeaveVT(VT_FUNC_ARGS_DECL)
+{
+	SCRN_INFO_PTR(arg);
+	int i, ret;
+
+	TRACE_ENTER();
+
+	for (i = 1; i < currentMaxClients; i++) {
+		if (clients[i] && !clients[i]->clientGone)
+			IgnoreClient(clients[i]);
+	}
+
+	ret = FBTurboDropDRMMaster();
+	if (ret)
+		WARNING_MSG("drmDropMaster failed: %s", strerror(errno));
+
+	TRACE_EXIT();
+}
+
 static Bool
 FBDevGetRec(ScrnInfoPtr pScrn)
 {
@@ -691,11 +927,18 @@ static Bool FBDevPciProbe(DriverPtr drv, int entity_num,
 	    pScrn->PreInit       = FBDevPreInit;
 	    pScrn->ScreenInit    = FBDevScreenInit;
 	    pScrn->FreeScreen    = FBDevFreeScreen;
+#if 0
 	    pScrn->SwitchMode    = fbdevHWSwitchModeWeak();
 	    pScrn->AdjustFrame   = fbdevHWAdjustFrameWeak();
 	    pScrn->EnterVT       = fbdevHWEnterVTWeak();
 	    pScrn->LeaveVT       = fbdevHWLeaveVTWeak();
 	    pScrn->ValidMode     = fbdevHWValidModeWeak();
+#else
+	    pScrn->SwitchMode    = FBTurboSwitchMode;
+	    pScrn->AdjustFrame   = FBTurboAdjustFrame;
+	    pScrn->EnterVT       = FBTurboEnterVT;
+	    pScrn->LeaveVT       = FBTurboLeaveVT;
+#endif
 
 	    CONFIG_MSG(
 		       "claimed PCI slot %d@%d:%d:%d", 
@@ -811,12 +1054,19 @@ FBDevProbe(DriverPtr drv, int flags)
 		    pScrn->PreInit       = FBDevPreInit;
 		    pScrn->ScreenInit    = FBDevScreenInit;
 		    pScrn->FreeScreen    = FBDevFreeScreen;
+#if 0
 		    pScrn->SwitchMode    = fbdevHWSwitchModeWeak();
 		    pScrn->AdjustFrame   = fbdevHWAdjustFrameWeak();
 		    pScrn->EnterVT       = fbdevHWEnterVTWeak();
 		    pScrn->LeaveVT       = fbdevHWLeaveVTWeak();
 		    pScrn->ValidMode     = fbdevHWValidModeWeak();
-		    
+#else
+		    pScrn->SwitchMode    = FBTurboSwitchMode;
+		    pScrn->AdjustFrame   = FBTurboAdjustFrame;
+		    pScrn->EnterVT       = FBTurboEnterVT;
+		    pScrn->LeaveVT       = FBTurboLeaveVT;
+#endif
+
 		    INFO_MSG(
 			       "using %s", dev ? dev : "default device");
 		}
@@ -921,12 +1171,23 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	memcpy(fPtr->Options, FBDevOptions, sizeof(FBDevOptions));
 	xf86ProcessOptions(pScrn->scrnIndex, fPtr->pEnt->device->options, fPtr->Options);
 
+#ifdef HAVE_LIBUMP
+	fPtr->UseDumb = xf86ReturnOptValBool(fPtr->Options, OPTION_USE_DUMB, FALSE);
+#else
+	fPtr->UseDumb = TRUE;
+#endif
+
+        if (!FBTurboOpenDRM(pScrn)) {
+                ERROR_MSG("FBTurboOpenDRM failed");
+                fPtr->UseDumb = FALSE;
+        }
+
 	/* check the processor type */
 	cpuinfo = cpuinfo_init();
 	INFO_MSG( "processor: %s",
 	           cpuinfo->processor_name);
 	/* don't use shadow by default if we have VFP/NEON or HW acceleration */
-	fPtr->shadowFB = !cpuinfo->has_arm_vfp &&
+	fPtr->shadowFB = !cpuinfo->has_arm_vfp && !fPtr->UseDumb &&
 	                 !xf86GetOptValString(fPtr->Options, OPTION_ACCELMETHOD);
 	cpuinfo_close(cpuinfo);
 
@@ -935,6 +1196,8 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 					      fPtr->shadowFB);
 
 	debug = xf86ReturnOptValBool(fPtr->Options, OPTION_DEBUG, FALSE);
+
+	fPtr->NoFlip = FALSE;
 
 	/* rotation */
 	fPtr->rotate = FBDEV_ROTATE_NONE;
@@ -986,6 +1249,22 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	FBDev_crtc_config(pScrn);
 
 	FBTurboFBSetVideoModes(pScrn);
+
+	fPtr->bo_ops = NULL;
+
+	if (fPtr->UseDumb)
+		fPtr->bo_ops = &dumb_bo_ops;
+#ifdef HAVE_LIBUMP
+	else
+		fPtr->bo_ops = &ump_bo_ops;
+#endif
+
+	if (fPtr->bo_ops) {
+		if (!fPtr->bo_ops->open(&fPtr->bo_dev, fPtr->drmFD)) {
+			ERROR_STR("%s: fPtr->bo_ops->open() failed", __func__);
+			fPtr->bo_ops = NULL;
+		}
+	}
 
 	DEBUG_MSG(1, "FBDEV_lcd_init");
 	if (!FBDEV_lcd_init(pScrn))
@@ -1182,6 +1461,12 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 
 	TRACE_ENTER("FBDevScreenInit");
 
+	/* set drm master before allocating scanout buffer */
+	if (FBTurboSetDRMMaster()) {
+		ERROR_MSG("Cannot get DRM master: %s", strerror(errno));
+		return FALSE;
+	}
+
 	depth = pScrn->depth;
 #if USE_CRTC_AND_LCD
 	if (pScrn->bitsPerPixel > 25)
@@ -1286,10 +1571,31 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 		pScrn->PointerMoved = FBDevPointerMoved;
 	}
 
+	fPtr->NoFlip = FALSE;
+
+	if (xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2, TRUE)) {
+		if (!InitFBTurboPriv(pScreen, pScrn, fPtr->drmFD)) {
+			ERROR_STR("%s: init privates failed!", __func__);
+		}
+	}
+
 	fPtr->fbstart = fPtr->fbmem + fPtr->fboff;
+	fPtr->scanout = FBTURBO_BO_INVALID_HANDLE;
+	fPtr->scanout_ptr = NULL;
 
 	if (fPtr->shadowFB) {
-	    fPtr->shadow = calloc(1, pScrn->virtualX * pScrn->virtualY *
+	    if (fPtr->bo_ops && fPtr->UseDumb) {
+		fPtr->scanout = fPtr->bo_ops->new(fPtr->bo_dev, pScrn->virtualX,
+			pScrn->virtualY, pScrn->bitsPerPixel, pScrn->bitsPerPixel,
+			0, FBTURBO_BO_TYPE_DEFAULT);
+		fPtr->scanout_ptr = fPtr->bo_ops->map(fPtr->scanout);
+		fPtr->shadow = fPtr->scanout_ptr;
+	    }
+
+	    if (fPtr->shadow)
+		INFO_MSG("Created shadow bo");
+	    else
+	        fPtr->shadow = calloc(1, pScrn->virtualX * pScrn->virtualY *
 				  pScrn->bitsPerPixel);
 
 	    if (!fPtr->shadow) {
@@ -1297,6 +1603,26 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 			   "Failed to allocate shadow framebuffer");
 		return FALSE;
 	    }
+
+	} else {
+	    if (fPtr->bo_ops && fPtr->UseDumb) {
+		fPtr->scanout = fPtr->bo_ops->new(fPtr->bo_dev, pScrn->virtualX,
+			pScrn->virtualY, pScrn->bitsPerPixel, pScrn->bitsPerPixel,
+			ARMSOC_CREATE_PIXMAP_SCANOUT, FBTURBO_BO_TYPE_DEFAULT);
+		fPtr->scanout_ptr = fPtr->bo_ops->map(fPtr->scanout);
+		fPtr->fbstart = fPtr->scanout_ptr;
+	    }
+
+	    if (!fPtr->fbstart) {
+		ERROR_MSG(
+			   "Failed to allocate scanout buffer");
+		return FALSE;
+	    }
+	}
+
+	if (fPtr->bo_ops && fPtr->scanout_ptr) {
+		pScrn->displayWidth = fPtr->bo_ops->get_pitch(fPtr->scanout) /
+				((pScrn->bitsPerPixel+7) / 8);
 	}
 
 	switch ((type = fbdevHWGetType(pScrn)))
@@ -1496,8 +1822,17 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	miDCInitialize(pScreen, xf86GetPointerScreenFuncs());
 
 #if USE_CRTC_AND_LCD
+#if 0
 	DEBUG_MSG(1, "xf86SetDesiredModes");
 	xf86SetDesiredModes(pScrn);
+#endif
+
+	pScrn->vtSema = TRUE;
+
+	if (!FBTurboEnterVT(VT_FUNC_ARGS(0))) {
+		ERROR_MSG("FBTurboEnterVT() failed!");
+		return FALSE;
+	}
 
 	DEBUG_MSG(1, "xf86CrtcScreenInit");
 	if (!xf86CrtcScreenInit(pScreen))
@@ -1549,9 +1884,15 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 		return FALSE;
 
 	DEBUG_MSG(1, "xf86DPMSInit");
+#if 0
 	xf86DPMSInit(pScreen, fbdevHWDPMSSetWeak(), 0);
 
 	pScreen->SaveScreen = fbdevHWSaveScreenWeak();
+#else
+	xf86DPMSInit(pScreen, xf86DPMSSet, 0);
+
+	pScreen->SaveScreen = xf86SaveScreen;
+#endif
 
 	/* Wrap the current CloseScreen function */
 	fPtr->CloseScreen = pScreen->CloseScreen;
@@ -1594,17 +1935,14 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 		           "failed to enable hardware cursor");
 	}
 
-#ifdef HAVE_LIBUMP
 	if (xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2, TRUE)) {
-	    Bool bUseDumb =  xf86ReturnOptValBool(fPtr->Options, OPTION_USE_DUMB, FALSE);
-
 	    fPtr->FBTurboMaliDRI2_private = FBTurboMaliDRI2_Init(pScreen,
 		xf86ReturnOptValBool(fPtr->Options, OPTION_DRI2_OVERLAY, TRUE),
 		xf86ReturnOptValBool(fPtr->Options, OPTION_SWAPBUFFERS_WAIT, TRUE),
-		bUseDumb);
+		fPtr->UseDumb);
 
 	    if (fPtr->FBTurboMaliDRI2_private) {
-		if (bUseDumb)
+		if (fPtr->UseDumb)
 		    INFO_MSG(
 			   "using DRI2 integration for Mali GPU (dumb buffers)");
 		else
@@ -1624,12 +1962,6 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	    INFO_MSG(
 	               "DRI2 integration for Mali GPU is disabled in xorg.conf");
 	}
-#else
-	INFO_MSG(
-	           "no 3D acceleration because the driver has been compiled without libUMP");
-	INFO_MSG(
-	           "if this is wrong and needs to be fixed, please check ./configure log");
-#endif
 
 	TRACE_EXIT("FBDevScreenInit");
 
@@ -1642,13 +1974,11 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	FBDevPtr fPtr = FBDEVPTR(pScrn);
 
-#ifdef HAVE_LIBUMP
 	if (fPtr->FBTurboMaliDRI2_private) {
 	    FBTurboMaliDRI2_Close(pScreen);
 	    free(fPtr->FBTurboMaliDRI2_private);
 	    fPtr->FBTurboMaliDRI2_private = NULL;
 	}
-#endif
 
 	if (fPtr->SunxiDispHardwareCursor_private) {
 	    SunxiDispHardwareCursor_Close(pScreen);
@@ -1666,10 +1996,18 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 
 	fbdevHWRestore(pScrn);
 	fbdevHWUnmapVidmem(pScrn);
+
 	if (fPtr->shadow) {
 	    shadowRemove(pScreen, pScreen->GetScreenPixmap(pScreen));
-	    free(fPtr->shadow);
+	    if (fPtr->shadow != fPtr->scanout_ptr)
+	        free(fPtr->shadow);
 	    fPtr->shadow = NULL;
+	}
+
+	if (fPtr->bo_ops && fPtr->bo_ops->valid(fPtr->scanout)) {
+	    fPtr->bo_ops->unmap(fPtr->scanout);
+	    fPtr->bo_ops->release(fPtr->scanout);
+	    free(fPtr->scanout);
 	}
 
 	if (fPtr->SunxiG2D_private) {
@@ -1701,6 +2039,12 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 	  fPtr->pDGAMode = NULL;
 	  fPtr->nDGAMode = 0;
 	}
+
+	pScrn->displayWidth = 0;
+
+	if (pScrn->vtSema == TRUE)
+		FBTurboLeaveVT(VT_FUNC_ARGS(0));
+
 	pScrn->vtSema = FALSE;
 
 	pScreen->CreateScreenResources = fPtr->CreateScreenResources;
@@ -1720,6 +2064,9 @@ FBDevFreeScreen(FREE_SCREEN_ARGS_DECL)
 		/* This can happen if a Screen is deleted after Probe(): */
 		return;
 	}
+
+	if (fPtr->bo_ops)
+		fPtr->bo_ops->close(fPtr->bo_dev);
 
 	FBDevFreeRec(pScrn);
 

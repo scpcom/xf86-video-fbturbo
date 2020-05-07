@@ -26,7 +26,9 @@
 
 #include "fbdev_bo.h"
 
+#ifndef USE_DIX_PRIVATE
 #include "uthash.h"
+#endif
 
 #define BO_MUST_BE_ODD_FRAME  1
 #define BO_MUST_BE_EVEN_FRAME 2
@@ -34,6 +36,21 @@
 
 /* The number of bytes randomly sampled from BO to detect its change */
 #define RANDOM_SAMPLES_COUNT      64
+
+#define DRI2_BUFFER_FB_MASK     0x02 /* FB: 1, non-FB: 0 */
+#define DRI2_BUFFER_MAPPED_MASK 0x04 /* mapped: 1, not-mapped: 0 */
+#define DRI2_BUFFER_REUSED_MASK 0x08 /* re-used: 1, re-created: 0 */
+#define DRI2_BUFFER_AGE_MASK    0x70 /* buffer age */
+#define DRI2_BUFFER_FLAG_MASK   0x7f /* dri2 buffer flag mask */
+
+#define DRI2_BUFFER_GET_FB(flag)        ((flag) & DRI2_BUFFER_FB_MASK) ? 1 : 0
+#define DRI2_BUFFER_SET_FB(flag, fb) (flag) |= (((fb) << 1) & DRI2_BUFFER_FB_MASK);
+#define DRI2_BUFFER_GET_MAPPED(flag) ((flag) & DRI2_BUFFER_MAPPED_MASK) ? 1 : 0
+#define DRI2_BUFFER_SET_MAPPED(flag, mapped) (flag) |= (((mapped) << 2) & DRI2_BUFFER_MAPPED_MASK);
+#define DRI2_BUFFER_GET_REUSED(flag)      ((flag) & DRI2_BUFFER_REUSED_MASK) ? 1 : 0
+#define DRI2_BUFFER_SET_REUSED(flag, reused) (flag) |= (((reused) << 3) & DRI2_BUFFER_REUSED_MASK);
+#define DRI2_BUFFER_GET_AGE(flag) ((flag) & DRI2_BUFFER_AGE_MASK) >> 4
+#define DRI2_BUFFER_SET_AGE(flag, age) (flag) |= (((age) << 4) & DRI2_BUFFER_AGE_MASK);
 
 /* Data structure with the information about an BO */
 typedef struct
@@ -43,7 +60,9 @@ typedef struct
     int                     BackupDevKind;
     void                   *BackupDevPrivatePtr;
     int                     refcount;
+#ifndef USE_DIX_PRIVATE
     UT_hash_handle          hh;
+#endif
 
     FBTurboBOHandle         handle;
     size_t                  size;
@@ -52,6 +71,7 @@ typedef struct
     size_t                  width;
     size_t                  height;
     uint8_t                 bpp;
+    int                     usage_hint;
     int                     extra_flags;
 
     FBTurboBOSecureID       secure_id;
@@ -89,7 +109,9 @@ typedef struct
  */
 typedef struct
 {
+#ifndef USE_DIX_PRIVATE
     UT_hash_handle          hh;
+#endif
     DrawablePtr             pDraw;
     /* width and height must be the same for back and front buffers */
     int                     width, height;
@@ -162,7 +184,7 @@ typedef struct {
     /* Wait for vsync when swapping DRI2 buffers */
     Bool                    bSwapbuffersWait;
 
-    FBTurboBODevice        *dev;
+    FBTurboBODevice        *bo_dev;
     FBTurboBOOps           *bo_ops;
 } FBTurboMaliDRI2;
 
@@ -171,5 +193,17 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bSwapbuffersWait,
                                   Bool      bUseDumb);
 void FBTurboMaliDRI2_Close(ScreenPtr pScreen);
+
+void *FBTurboCreatePixmap2(ScreenPtr pScreen, int width, int height,
+		int depth, int usage_hint, int bitsPerPixel,
+		int *new_fb_pitch);
+void FBTurboDestroyPixmap(ScreenPtr pScreen, void *driverPriv);
+Bool FBTurboModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
+		int depth, int bitsPerPixel, int devKind,
+		pointer pPixData);
+void FBTurboWaitMarker(ScreenPtr pScreen, int marker);
+Bool FBTurboPrepareAccess(PixmapPtr pPixmap, int index);
+void FBTurboFinishAccess(PixmapPtr pPixmap, int index);
+Bool FBTurboPixmapIsOffscreen(PixmapPtr pPixmap);
 
 #endif
