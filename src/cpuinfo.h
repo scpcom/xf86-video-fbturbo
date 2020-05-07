@@ -41,7 +41,7 @@ typedef struct {
     char *processor_name;
 } cpuinfo_t;
 
-cpuinfo_t *cpuinfo_init();
+cpuinfo_t *cpuinfo_init(void);
 void cpuinfo_close(cpuinfo_t *cpuinfo);
 
 #endif

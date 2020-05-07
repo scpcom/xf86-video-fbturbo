@@ -102,7 +102,7 @@ xPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
      * of infinite recursion
      */
     if (private->PostValidateTreeNestingLevel > 4) {
-        DebugMsg("Oops, too much nesting for PostValidateTree, bailing out\n");
+        DEBUG_STR(2,"Oops, too much nesting for PostValidateTree, bailing out");
         return;
     }
 
@@ -110,13 +110,13 @@ xPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
 
     /* Disable backing store for the focus window */
     if (!private->ForceBackingStore && focusWin->backStorage) {
-        DebugMsg("Disable backing store for the focus window 0x%x\n",
+        DEBUG_STR(2,"Disable backing store for the focus window 0x%x",
                  (unsigned int)focusWin->drawable.id);
         pScreen->backingStoreSupport = Always;
         focusWin->backingStore = NotUseful;
         (*pScreen->ChangeWindowAttributes) (focusWin, CWBackingStore);
         if (CurrentCount != private->PostValidateTreeCount) {
-            DebugMsg("Nested PostValidateTree in ChangeWindowAttributes\n");
+            DEBUG_STR(2,"Nested PostValidateTree in ChangeWindowAttributes");
             private->PostValidateTreeNestingLevel--;
             return;
         }
@@ -127,13 +127,13 @@ xPostValidateTree(WindowPtr pWin, WindowPtr pLayerWin, VTKind kind)
     while (curWin) {
         if (!curWin->backStorage && (private->ForceBackingStore ||
                                      curWin != focusWin)) {
-            DebugMsg("Enable backing store for window 0x%x\n",
+            DEBUG_STR(2,"Enable backing store for window 0x%x",
                      (unsigned int)curWin->drawable.id);
             pScreen->backingStoreSupport = Always;
             curWin->backingStore = WhenMapped;
             (*pScreen->ChangeWindowAttributes) (curWin, CWBackingStore);
             if (CurrentCount != private->PostValidateTreeCount) {
-                DebugMsg("Nested PostValidateTree in ChangeWindowAttributes\n");
+                DEBUG_STR(2,"Nested PostValidateTree in ChangeWindowAttributes");
                 private->PostValidateTreeNestingLevel--;
                 return;
             }
@@ -159,7 +159,7 @@ xReparentWindow(WindowPtr pWin, WindowPtr pPriorParent)
 
     /* We only want backing store set for direct children of root */
     if (pPriorParent == pScreen->root && pWin->backStorage) {
-        DebugMsg("Reparent window 0x%x from root, disabling backing store\n",
+        DEBUG_STR(2,"Reparent window 0x%x from root, disabling backing store",
                  (unsigned int)pWin->drawable.id);
         pScreen->backingStoreSupport = Always;
         pWin->backingStore = NotUseful;
@@ -171,21 +171,22 @@ xReparentWindow(WindowPtr pWin, WindowPtr pPriorParent)
 
 BackingStoreTuner *BackingStoreTuner_Init(ScreenPtr pScreen, Bool force)
 {
+    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     BackingStoreTuner *private = calloc(1, sizeof(BackingStoreTuner));
     if (!private) {
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-            "BackingStoreTuner_Init: calloc failed\n");
+        INFO_MSG(
+            "BackingStoreTuner_Init: calloc failed");
         return NULL;
     }
 
     private->ForceBackingStore = force;
 
     if (private->ForceBackingStore)
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-                   "automatically forcing backing store for all windows\n");
+        INFO_MSG(
+                   "automatically forcing backing store for all windows");
     else
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-                   "using backing store heuristics\n");
+        INFO_MSG(
+                   "using backing store heuristics");
 
     /* Wrap the current PostValidateTree function */
     private->PostValidateTree = pScreen->PostValidateTree;

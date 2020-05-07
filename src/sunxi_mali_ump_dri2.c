@@ -192,7 +192,7 @@ WindowWalker(WindowPtr pWin, pointer value)
             BoxPtr sbox2 = WindowExtents(mali->pOverlayWin, &sboxrec2);
             if (BOXES_OVERLAP(sbox1, sbox2)) {
                 mali->bOverlayWinOverlapped = TRUE;
-                DebugMsg("overlapped by %p, x=%d, y=%d, w=%d, h=%d\n", pWin,
+                DEBUG_STR(2,"overlapped by %p, x=%d, y=%d, w=%d, h=%d", pWin,
                          pWin->drawable.x, pWin->drawable.y,
                          pWin->drawable.width, pWin->drawable.height);
                 return WT_STOPWALKING;
@@ -216,19 +216,18 @@ MigratePixmapToBO(PixmapPtr pPixmap)
     BOInfoPtr bo;
     size_t pitch = ((pPixmap->devKind + 7) / 8) * 8;
     size_t size = pitch * pPixmap->drawable.height;
-    size_t test_pitch, test_size;
 
     HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
 
     if (bo) {
-        DebugMsg("MigratePixmapToBO %p, already exists = %p\n", pPixmap, bo);
+        DEBUG_MSG(2,"MigratePixmapToBO %p, already exists = %p", pPixmap, bo);
         return bo;
     }
 
     /* create the BO */
     bo = calloc(1, sizeof(BOInfoRec));
     if (!bo) {
-        ErrorF("MigratePixmapToBO: calloc failed\n");
+        ERROR_MSG("MigratePixmapToBO: calloc failed");
         return NULL;
     }
     bo->refcount = 1;
@@ -241,7 +240,7 @@ MigratePixmapToBO(PixmapPtr pPixmap)
                                 FBTURBO_BO_TYPE_DEFAULT);
 
     if (!mali->bo_ops->valid(bo->handle)) {
-        ErrorF("MigratePixmapToBO: mali->bo_ops->new failed\n");
+        ERROR_MSG("MigratePixmapToBO: mali->bo_ops->new failed");
         free(bo);
         return NULL;
     }
@@ -259,7 +258,7 @@ MigratePixmapToBO(PixmapPtr pPixmap)
         int y;
         for (y = 0; y < bo->height; y++) {
             memcpy(bo->addr + y * pitch, 
-                   pPixmap->devPrivate.ptr + y * pPixmap->devKind,
+                   (char*)pPixmap->devPrivate.ptr + y * pPixmap->devKind,
                    pPixmap->devKind);
         }
     }
@@ -272,7 +271,7 @@ MigratePixmapToBO(PixmapPtr pPixmap)
 
     HASH_ADD_PTR(mali->HashPixmapToBO, pPixmap, bo);
 
-    DebugMsg("MigratePixmapToBO %p, new buf = %p\n", pPixmap, bo);
+    DEBUG_MSG(2,"MigratePixmapToBO %p, new buf = %p", pPixmap, bo);
     return bo;
 }
 
@@ -281,7 +280,7 @@ static void UpdateOverlay(ScreenPtr pScreen);
 static void unref_bo_info(FBTurboBOOps *bo_ops, BOInfoPtr bo)
 {
     if (--bo->refcount <= 0) {
-        DebugMsg("unref_bo_info(%p) [refcount=%d, handle=%p]\n",
+        DEBUG_STR(2,"unref_bo_info(%p) [refcount=%d, handle=%p]",
                  bo, bo->refcount, bo->handle);
         if (bo_ops->valid(bo->handle)) {
             bo_ops->unmap(bo->handle);
@@ -290,7 +289,7 @@ static void unref_bo_info(FBTurboBOOps *bo_ops, BOInfoPtr bo)
         free(bo);
     }
     else {
-        DebugMsg("Reduced bo_info %p refcount to %d\n",
+        DEBUG_STR(2,"Reduced bo_info %p refcount to %d",
                  bo, bo->refcount);
     }
 }
@@ -299,7 +298,7 @@ static void bo_add_to_queue(DRI2WindowStatePtr window_state,
                                 BOInfoPtr bo)
 {
     if (window_state->bo_queue[window_state->bo_queue_head]) {
-        ErrorF("Fatal error, BOs queue overflow!\n");
+        ERROR_STR("Fatal error, BOs queue overflow!");
         return;
     }
 
@@ -343,24 +342,22 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     ScrnInfoPtr              pScrn    = xf86Screens[pScreen->myNum];
     DRI2Buffer2Ptr           buffer;
     BOInfoPtr                privates;
-    FBTurboBOHandle          handle;
     FBTurboMaliDRI2         *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t            *disp = SUNXI_DISP(pScrn);
     Bool                     can_use_overlay = TRUE;
     PixmapPtr                pWindowPixmap;
     DRI2WindowStatePtr       window_state = NULL;
     Bool                     need_window_resize_bug_workaround = FALSE;
-    size_t test_pitch, test_size;
 
     if (!(buffer = calloc(1, sizeof *buffer))) {
-        ErrorF("MaliDRI2CreateBuffer: calloc failed\n");
+        ERROR_MSG("DRI2CreateBuffer: calloc failed");
         return NULL;
     }
 
     if (pDraw->type == DRAWABLE_WINDOW &&
         (pWindowPixmap = pScreen->GetWindowPixmap((WindowPtr)pDraw)))
     {
-        DebugMsg("win=%p (w=%d, h=%d, x=%d, y=%d) has backing pix=%p (w=%d, h=%d, screen_x=%d, screen_y=%d)\n",
+        DEBUG_MSG(2,"DRI2CreateBuffer: win=%p (w=%d, h=%d, x=%d, y=%d) has backing pix=%p (w=%d, h=%d, screen_x=%d, screen_y=%d)",
                  pDraw, pDraw->width, pDraw->height, pDraw->x, pDraw->y,
                  pWindowPixmap, pWindowPixmap->drawable.width, pWindowPixmap->drawable.height,
                  pWindowPixmap->screen_x, pWindowPixmap->screen_y);
@@ -370,7 +367,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     if (pDraw->type == DRAWABLE_PIXMAP)
     {
         if (!(privates = MigratePixmapToBO((PixmapPtr)pDraw))) {
-            ErrorF("MaliDRI2CreateBuffer: MigratePixmapToBO failed\n");
+            ERROR_MSG("DRI2CreateBuffer: MigratePixmapToBO failed");
             free(buffer);
             return NULL;
         }
@@ -383,7 +380,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         buffer->pitch         = ((PixmapPtr)pDraw)->devKind;
         buffer->name = mali->bo_ops->secure_id_get(privates->handle);
 
-        DebugMsg("DRI2CreateBuffer pix=%p, buf=%p:%p, att=%d, ump=%d:%d, w=%d, h=%d, cpp=%d, depth=%d\n",
+        DEBUG_MSG(2,"DRI2CreateBuffer pix=%p, buf=%p:%p, att=%d, id=%d:%d, w=%zd, h=%zd, cpp=%d, depth=%d",
                  pDraw, buffer, privates, attachment, buffer->name, buffer->flags,
                  privates->width, privates->height, buffer->cpp, privates->depth);
 
@@ -391,7 +388,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     }
 
     if (!(privates = calloc(1, sizeof *privates))) {
-        ErrorF("MaliDRI2CreateBuffer: calloc failed\n");
+        ERROR_MSG("DRI2CreateBuffer: calloc failed");
         free(buffer);
         return NULL;
     }
@@ -438,7 +435,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         can_use_overlay = FALSE;
 
     if (disp && disp->framebuffer_size - disp->gfx_layer_size < privates->size * 2) {
-        DebugMsg("Not enough space in the offscreen framebuffer (wanted %d for DRI2)\n",
+        DEBUG_MSG(2,"DRI2CreateBuffer: Not enough space in the offscreen framebuffer (wanted %zd for DRI2)",
                  privates->size);
         can_use_overlay = FALSE;
     }
@@ -449,7 +446,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         window_state = calloc(1, sizeof(*window_state));
         window_state->pDraw = pDraw;
         HASH_ADD_PTR(mali->HashWindowState, pDraw, window_state);
-        DebugMsg("Allocate DRI2 bookkeeping for window %p\n", pDraw);
+        DEBUG_MSG(2,"DRI2CreateBuffer: Allocate DRI2 bookkeeping for window %p", pDraw);
         if (disp && can_use_overlay) {
             /* erase the offscreen part of the framebuffer */
             memset(disp->framebuffer_addr + disp->gfx_layer_size, 0,
@@ -499,7 +496,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         mali->pOverlayWin = (WindowPtr)pDraw;
 
         if (need_window_resize_bug_workaround) {
-            DebugMsg("DRI2 buffers size mismatch detected, trying to recover\n");
+            DEBUG_MSG(2,"DRI2CreateBuffer: DRI2 buffers size mismatch detected, trying to recover");
             buffer->name = mali->ump_alternative_fb_secure_id;
         }
     }
@@ -513,7 +510,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         window_state->bo_front_ptr = NULL;
 
         if (need_window_resize_bug_workaround) {
-            DebugMsg("DRI2 buffers size mismatch detected, trying to recover\n");
+            DEBUG_MSG(2,"DRI2CreateBuffer: DRI2 buffers size mismatch detected, trying to recover");
 
             if (window_state->bo_mem_ptr)
                 unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
@@ -539,7 +536,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
             buffer->driverPrivate = privates;
             buffer->name = mali->bo_ops->secure_id_get(privates->handle);
 
-            DebugMsg("Reuse the already allocated BO %p, ump=%d\n",
+            DEBUG_MSG(2,"DRI2CreateBuffer: Reuse the already allocated BO %p, id=%d",
                      privates, buffer->name);
             return validate_dri2buf(buffer);
         }
@@ -554,7 +551,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
 	mali->bo_ops->switch_hw_usage(privates->handle, FALSE);
 
         if (!mali->bo_ops->valid(privates->handle)) {
-            ErrorF("Failed to allocate BO (size=%d)\n",
+            ERROR_MSG("DRI2CreateBuffer: Failed to allocate BO (size=%d)",
                    (int)privates->size);
         }
         privates->addr = mali->bo_ops->map(privates->handle);
@@ -569,7 +566,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         privates->refcount++;
     }
 
-    DebugMsg("DRI2CreateBuffer win=%p, buf=%p:%p, att=%d, ump=%d:%d, w=%d, h=%d, cpp=%d, depth=%d\n",
+    DEBUG_MSG(2,"DRI2CreateBuffer win=%p, buf=%p:%p, att=%d, id=%d:%d, w=%zd, h=%zd, cpp=%d, depth=%d",
              pDraw, buffer, privates, attachment, buffer->name, buffer->flags,
              privates->width, privates->height, buffer->cpp, privates->depth);
 
@@ -586,7 +583,7 @@ static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
     if (mali->pOverlayDirtyBO == buffer->driverPrivate)
         mali->pOverlayDirtyBO = NULL;
 
-    DebugMsg("DRI2DestroyBuffer %s=%p, buf=%p:%p, att=%d\n",
+    DEBUG_MSG(2,"DRI2DestroyBuffer %s=%p, buf=%p:%p, att=%d",
              pDraw->type == DRAWABLE_WINDOW ? "win" : "pix",
              pDraw, buffer, buffer->driverPrivate, buffer->attachment);
 
@@ -606,7 +603,6 @@ static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
     GCPtr pGC;
     RegionPtr copyRegion;
     ScreenPtr pScreen = pDraw->pScreen;
-    BOInfoPtr privates;
     PixmapPtr pScratchPixmap;
 
     if (bo_ops->valid(bo->handle)) {
@@ -641,7 +637,7 @@ static void FlushOverlay(ScreenPtr pScreen)
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     if (mali->pOverlayWin && mali->pOverlayDirtyBO) {
-        DebugMsg("Flushing overlay content from DRI2 buffer to window\n");
+        DEBUG_MSG(2,"Flushing overlay content from DRI2 buffer to window");
         MaliDRI2CopyRegion_copy((DrawablePtr)mali->pOverlayWin,
                                 &pScreen->root->winSize,
                                 mali->bo_ops,
@@ -657,34 +653,34 @@ static void check_rgb_pattern(DRI2WindowStatePtr window_state,
     switch (*(uint32_t *)(bo->addr + bo->offs)) {
     case 0xFFFF0000:
         if (window_state->rgb_pattern_state == 0) {
-            ErrorF("starting RGB pattern with [Red]\n");
+            ERROR_STR("starting RGB pattern with [Red]");
         }
         else if (window_state->rgb_pattern_state != 'B') {
-            ErrorF("warning - transition to [Red] not from [Blue]\n");
+            ERROR_STR("warning - transition to [Red] not from [Blue]");
         }
         window_state->rgb_pattern_state = 'R';
         break;
     case 0xFF00FF00:
         if (window_state->rgb_pattern_state == 0) {
-            ErrorF("starting RGB pattern with [Green]\n");
+            ERROR_STR("starting RGB pattern with [Green]");
         }
         else if (window_state->rgb_pattern_state != 'R') {
-            ErrorF("warning - transition to [Green] not from [Red]\n");
+            ERROR_STR("warning - transition to [Green] not from [Red]");
         }
         window_state->rgb_pattern_state = 'G';
         break;
     case 0xFF0000FF:
         if (window_state->rgb_pattern_state == 0) {
-            ErrorF("starting RGB pattern with [Blue]\n");
+            ERROR_STR("starting RGB pattern with [Blue]");
         }
         else if (window_state->rgb_pattern_state != 'G') {
-            ErrorF("warning - transition to [Blue] not from [Green]\n");
+            ERROR_STR("warning - transition to [Blue] not from [Green]");
         }
         window_state->rgb_pattern_state = 'B';
         break;
     default:
         if (window_state->rgb_pattern_state != 0) {
-            ErrorF("stopping RGB pattern\n");
+            ERROR_STR("stopping RGB pattern");
         }
         window_state->rgb_pattern_state = 0;
     }
@@ -705,12 +701,12 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
     HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
 
     if (pDraw->type == DRAWABLE_PIXMAP) {
-        DebugMsg("MaliDRI2CopyRegion has been called for pixmap %p\n", pDraw);
+        DEBUG_MSG(2,"MaliDRI2CopyRegion has been called for pixmap %p", pDraw);
         return;
     }
 
     if (!window_state) {
-        DebugMsg("MaliDRI2CopyRegion: can't find window %p in the hash\n", pDraw);
+        DEBUG_MSG(2,"MaliDRI2CopyRegion: can't find window %p in the hash", pDraw);
         return;
     }
 
@@ -749,7 +745,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
             BOInfoPtr tmp              = window_state->bo_back_ptr;
             window_state->bo_back_ptr  = window_state->bo_front_ptr;
             window_state->bo_front_ptr = tmp;
-            DebugMsg("Unexpected modification of the front buffer detected.\n");
+            DEBUG_MSG(2,"Unexpected modification of the front buffer detected.");
         }
         else {
             /* Not enough information to make a decision yet */
@@ -849,7 +845,7 @@ static void UpdateOverlay(ScreenPtr pScreen)
     /* Disable overlays if the hardware cursor is not in use */
     if (!mali->bHardwareCursorIsInUse) {
         if (mali->bOverlayWinEnabled) {
-            DebugMsg("Disabling overlay (no hardware cursor)\n");
+            DEBUG_MSG(2,"Disabling overlay (no hardware cursor)");
             sunxi_layer_hide(disp);
             mali->bOverlayWinEnabled = FALSE;
         }
@@ -860,7 +856,7 @@ static void UpdateOverlay(ScreenPtr pScreen)
     if (!mali->pOverlayWin->mapped)
     {
         if (mali->bOverlayWinEnabled) {
-            DebugMsg("Disabling overlay (window is not mapped)\n");
+            DEBUG_MSG(2,"Disabling overlay (window is not mapped)");
             sunxi_layer_hide(disp);
             mali->bOverlayWinEnabled = FALSE;
         }
@@ -879,7 +875,7 @@ static void UpdateOverlay(ScreenPtr pScreen)
 
     /* If the window got overlapped -> disable overlay */
     if (mali->bOverlayWinOverlapped && mali->bOverlayWinEnabled) {
-        DebugMsg("Disabling overlay (window is obscured)\n");
+        DEBUG_MSG(2,"Disabling overlay (window is obscured)");
         FlushOverlay(pScreen);
         mali->bOverlayWinEnabled = FALSE;
         sunxi_layer_hide(disp);
@@ -898,12 +894,12 @@ static void UpdateOverlay(ScreenPtr pScreen)
                                       mali->pOverlayWin->drawable.y,
                                       mali->pOverlayWin->drawable.width,
                                       mali->pOverlayWin->drawable.height);
-        DebugMsg("Move overlay to (%d, %d)\n", mali->overlay_x, mali->overlay_y);
+        DEBUG_MSG(2,"Move overlay to (%d, %d)", mali->overlay_x, mali->overlay_y);
     }
 
     /* If the window got unobscured -> enable overlay */
     if (!mali->bOverlayWinOverlapped && !mali->bOverlayWinEnabled) {
-        DebugMsg("Enabling overlay (window is fully unobscured)\n");
+        DEBUG_MSG(2,"Enabling overlay (window is fully unobscured)");
         mali->bOverlayWinEnabled = TRUE;
         sunxi_layer_show(disp);
     }
@@ -920,7 +916,7 @@ DestroyWindow(WindowPtr pWin)
     DRI2WindowStatePtr window_state = NULL;
     HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
     if (window_state) {
-        DebugMsg("Free DRI2 bookkeeping for window %p\n", pWin);
+        DEBUG_MSG(2,"Free DRI2 bookkeeping for window %p", pWin);
         HASH_DEL(mali->HashWindowState, window_state);
         if (window_state->bo_mem_ptr)
             unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
@@ -935,7 +931,7 @@ DestroyWindow(WindowPtr pWin)
         sunxi_disp_t *disp = SUNXI_DISP(pScrn);
         sunxi_layer_hide(disp);
         mali->pOverlayWin = NULL;
-        DebugMsg("DestroyWindow %p\n", pWin);
+        DEBUG_MSG(2,"DestroyWindow %p", pWin);
     }
 
     pScreen->DestroyWindow = mali->DestroyWindow;
@@ -998,7 +994,7 @@ DestroyPixmap(PixmapPtr pPixmap)
     HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
 
     if (bo) {
-        DebugMsg("DestroyPixmap %p for migrated BO pixmap (BO=%p)\n", pPixmap, bo);
+        DEBUG_MSG(2,"DestroyPixmap %p for migrated BO pixmap (BO=%p)", pPixmap, bo);
 
         pPixmap->devKind = bo->BackupDevKind;
         pPixmap->devPrivate.ptr = bo->BackupDevPrivatePtr;
@@ -1023,7 +1019,7 @@ static void EnableHWCursor(ScrnInfoPtr pScrn)
     SunxiDispHardwareCursor *hwc = SUNXI_DISP_HWC(pScrn);
 
     if (!mali->bHardwareCursorIsInUse) {
-        DebugMsg("EnableHWCursor\n");
+        DEBUG_MSG(2,"EnableHWCursor");
         mali->bHardwareCursorIsInUse = TRUE;
     }
 
@@ -1044,7 +1040,7 @@ static void DisableHWCursor(ScrnInfoPtr pScrn)
 
     if (mali->bHardwareCursorIsInUse) {
         mali->bHardwareCursorIsInUse = FALSE;
-        DebugMsg("DisableHWCursor\n");
+        DEBUG_MSG(2,"DisableHWCursor");
     }
 
     UpdateOverlay(screenInfo.screens[pScrn->scrnIndex]);
@@ -1090,12 +1086,12 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     Bool have_sunxi_cedar = TRUE;
 
     if (!xf86LoadKernelModule("mali"))
-        xf86DrvMsg(pScreen->myNum, X_INFO, "can't load 'mali' kernel module\n");
+        INFO_MSG( "can't load 'mali' kernel module");
     if (!xf86LoadKernelModule("mali_drm"))
-        xf86DrvMsg(pScreen->myNum, X_INFO, "can't load 'mali_drm' kernel module\n");
+        INFO_MSG( "can't load 'mali_drm' kernel module");
 
     if (!xf86LoadKernelModule("sunxi_cedar_mod")) {
-        xf86DrvMsg(pScreen->myNum, X_INFO, "can't load 'sunxi_cedar_mod' kernel module\n");
+        INFO_MSG( "can't load 'sunxi_cedar_mod' kernel module");
         have_sunxi_cedar = FALSE;
     }
 
@@ -1113,13 +1109,13 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     }
 
     if (drm_fd < 0) {
-        ErrorF("FBTurboMaliDRI2_Init: drmOpen failed!\n");
+        ERROR_MSG("FBTurboMaliDRI2_Init: drmOpen failed!");
         return NULL;
     }
 
 
     if (!(mali = calloc(1, sizeof(FBTurboMaliDRI2)))) {
-        ErrorF("FBTurboMaliDRI2_Init: calloc failed\n");
+        ERROR_MSG("FBTurboMaliDRI2_Init: calloc failed");
         return NULL;
     }
 
@@ -1131,7 +1127,7 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     if (!mali->bo_ops->open(&mali->dev, drm_fd)) {
         drmClose(drm_fd);
         free(mali);
-        ErrorF("FBTurboMaliDRI2_Init: mali->bo_ops->open() failed\n");
+        ERROR_MSG("FBTurboMaliDRI2_Init: mali->bo_ops->open() failed");
         return NULL;
     }
 
@@ -1154,8 +1150,8 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         if (!bUseDumb) {
             if (ioctl(disp->fd_fb, GET_UMP_SECURE_ID_SUNXI_FB, &mali->ump_fb_secure_id) ||
                                        mali->ump_fb_secure_id == FBTURBO_BO_INVALID_SECURE_ID) {
-                xf86DrvMsg(pScreen->myNum, X_INFO,
-                      "GET_UMP_SECURE_ID_SUNXI_FB ioctl failed, overlays can't be used\n");
+                INFO_MSG(
+                      "GET_UMP_SECURE_ID_SUNXI_FB ioctl failed, overlays can't be used");
                 mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
             }
         }
@@ -1165,8 +1161,8 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         if (mali->ump_alternative_fb_secure_id == FBTURBO_BO_INVALID_SECURE_ID ||
             mali->bo_ops->get_size_from_secure_id(mali->ump_alternative_fb_secure_id) !=
                                           disp->framebuffer_size) {
-            xf86DrvMsg(pScreen->myNum, X_INFO,
-                  "UMP does not wrap the whole framebuffer, overlays can't be used\n");
+            INFO_MSG(
+                  "UMP does not wrap the whole framebuffer, overlays can't be used");
             mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
             mali->ump_alternative_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
         }
@@ -1175,12 +1171,12 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                                  disp->xres * disp->yres * 4 * 2) {
             int needed_fb_num = (disp->xres * disp->yres * 4 * 2 +
                                  disp->gfx_layer_size - 1) / disp->gfx_layer_size + 1;
-            xf86DrvMsg(pScreen->myNum, X_INFO,
-                "tear-free zero-copy double buffering needs more video memory\n");
-            xf86DrvMsg(pScreen->myNum, X_INFO,
-                "please set fb0_framebuffer_num >= %d in the fex file\n", needed_fb_num);
-            xf86DrvMsg(pScreen->myNum, X_INFO,
-                "and sunxi_fb_mem_reserve >= %d in the kernel cmdline\n",
+            INFO_MSG(
+                "tear-free zero-copy double buffering needs more video memory");
+            INFO_MSG(
+                "please set fb0_framebuffer_num >= %d in the fex file", needed_fb_num);
+            INFO_MSG(
+                "and sunxi_fb_mem_reserve >= %d in the kernel cmdline",
                 (needed_fb_num * disp->gfx_layer_size + 1024 * 1024 - 1) / (1024 * 1024));
         }
     }
@@ -1199,21 +1195,21 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
     }
 
     if (mali->bo_null_secure_id > 2) {
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-                   "warning, can't workaround Mali r3p0 window resize bug\n");
+        INFO_MSG(
+                   "warning, can't workaround Mali r3p0 window resize bug");
     }
 
     if (disp && mali->ump_fb_secure_id != FBTURBO_BO_INVALID_SECURE_ID)
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-              "enabled display controller hardware overlays for DRI2\n");
+        INFO_MSG(
+              "enabled display controller hardware overlays for DRI2");
     else if (bUseOverlay)
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-              "display controller hardware overlays can't be used for DRI2\n");
+        INFO_MSG(
+              "display controller hardware overlays can't be used for DRI2");
     else
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-              "display controller hardware overlays are not used for DRI2\n");
+        INFO_MSG(
+              "display controller hardware overlays are not used for DRI2");
 
-    xf86DrvMsg(pScreen->myNum, X_INFO, "Wait on SwapBuffers? %s\n",
+    INFO_MSG( "Wait on SwapBuffers? %s",
                bSwapbuffersWait ? "enabled" : "disabled");
 
     info.version = 4;
@@ -1301,6 +1297,8 @@ void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
         mali->bo_ops->release(mali->bo_null_handle1);
     if (mali->bo_ops->valid(mali->bo_null_handle2))
         mali->bo_ops->release(mali->bo_null_handle2);
+
+    mali->bo_ops->close(mali->dev);
 
     drmClose(mali->drm_fd);
     DRI2CloseScreen(pScreen);

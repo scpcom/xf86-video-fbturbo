@@ -34,20 +34,25 @@
 #include <ump/ump.h>
 #include <ump/ump_ref_drv.h>
 
-Bool ump_bo_open(FBTurboBODevice **dev, int drm_fd)
+static Bool ump_bo_open(FBTurboBODevice **dev, int drm_fd)
 {
 	*dev = NULL;
 
 	return (ump_open() == UMP_OK);
 }
 
-FBTurboBOHandle ump_bo_new(FBTurboBODevice *dev,
+static void ump_bo_close(FBTurboBODevice *dev)
+{
+	/* no-op */
+}
+
+static FBTurboBOHandle ump_bo_new(FBTurboBODevice *dev,
                         uint32_t width,
                         uint32_t height, uint8_t depth, uint8_t bpp,
                         FBTurboBOUsage usage)
 {
 	size_t pitch, size;
-	ump_alloc_constraints constraints;
+	ump_alloc_constraints constraints = UMP_REF_DRV_CONSTRAINT_NONE;
 
 	switch (usage)
 	{
@@ -74,32 +79,32 @@ FBTurboBOHandle ump_bo_new(FBTurboBODevice *dev,
 	return ump_ref_drv_allocate(size, constraints);
 }
 
-void *ump_bo_map(FBTurboBOHandle handle)
+static void *ump_bo_map(FBTurboBOHandle handle)
 {
 	return ump_mapped_pointer_get(handle);
 }
 
-void ump_bo_unmap(FBTurboBOHandle handle)
+static void ump_bo_unmap(FBTurboBOHandle handle)
 {
 	ump_mapped_pointer_release(handle);
 }
 
-FBTurboBOSecureID ump_bo_secure_id_get(FBTurboBOHandle handle)
+static FBTurboBOSecureID ump_bo_secure_id_get(FBTurboBOHandle handle)
 {
 	return ump_secure_id_get(handle);
 }
 
-void ump_bo_release(FBTurboBOHandle handle)
+static void ump_bo_release(FBTurboBOHandle handle)
 {
 	ump_reference_release(handle);
 }
 
-Bool ump_bo_valid(FBTurboBOHandle handle)
+static Bool ump_bo_valid(FBTurboBOHandle handle)
 {
 	return (handle != FBTURBO_BO_INVALID_HANDLE);
 }
 
-int ump_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
+static int ump_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
 {
 	int ret = 0;
 
@@ -119,7 +124,7 @@ int ump_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
 	return ret;
 }
 
-unsigned long ump_bo_get_size_from_secure_id(FBTurboBOSecureID secure_id)
+static unsigned long ump_bo_get_size_from_secure_id(FBTurboBOSecureID secure_id)
 {
     unsigned long size;
     FBTurboBOHandle handle;
@@ -135,6 +140,7 @@ unsigned long ump_bo_get_size_from_secure_id(FBTurboBOSecureID secure_id)
 
 struct fbturbo_bo_ops ump_bo_ops = {
 	.open = ump_bo_open,
+	.close =  ump_bo_close,
 	.new = ump_bo_new,
 	.map = ump_bo_map,
 	.unmap = ump_bo_unmap,

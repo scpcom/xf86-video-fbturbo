@@ -43,8 +43,6 @@ sunxi_disp_t *sunxi_disp_init(const char *device, void *xserver_fbmem)
     struct fb_fix_screeninfo fb_fix;
 
     int tmp, version;
-    int gfx_layer_size;
-    int ovl_layer_size;
 
     /* use /dev/fb0 by default */
     if (!device)
@@ -348,7 +346,6 @@ int sunxi_layer_reserve(sunxi_disp_t *ctx)
 
 int sunxi_layer_release(sunxi_disp_t *ctx)
 {
-    int result;
     uint32_t tmp[4];
 
     if (ctx->layer_id < 0)
@@ -557,7 +554,6 @@ int sunxi_layer_show(sunxi_disp_t *ctx)
 
 int sunxi_layer_hide(sunxi_disp_t *ctx)
 {
-    int result;
     uint32_t tmp[4];
 
     if (ctx->layer_id < 0)
@@ -740,7 +736,7 @@ int sunxi_g2d_blit_a8r8g8b8(sunxi_disp_t *disp,
  * necessary to be able to use 32bpp mode.
  */
 
-int sunxi_g2d_blit_r5g6b5_in_three(sunxi_disp_t *disp, uint8_t *src_bits,
+static int sunxi_g2d_blit_r5g6b5_in_three(sunxi_disp_t *disp, uint8_t *src_bits,
     uint8_t *dst_bits, int src_stride, int dst_stride, int src_x, int src_y,
     int dst_x, int dst_y, int w, int h)
 {

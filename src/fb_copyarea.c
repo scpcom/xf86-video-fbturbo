@@ -54,10 +54,6 @@ fb_copyarea_t *fb_copyarea_init(const char *device, void *xserver_fbmem)
     struct fb_fix_screeninfo fb_fix;
     struct fb_copyarea copyarea;
 
-    int tmp, version;
-    int gfx_layer_size;
-    int ovl_layer_size;
-
     /* use /dev/fb0 by default */
     if (!device)
         device = "/dev/fb0";

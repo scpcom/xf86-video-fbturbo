@@ -47,6 +47,7 @@
 
 struct fbturbo_bo_ops {
 	Bool (*open)(FBTurboBODevice **dev, int drm_fd);
+	void (*close)(FBTurboBODevice *dev);
 
 	FBTurboBOHandle (*new)(FBTurboBODevice *dev,
 						   uint32_t width,

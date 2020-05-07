@@ -267,7 +267,7 @@ static XF86ImageRec Images[] =
 
 static XF86AttributeRec Attributes[] =
 {
-   {XvSettable | XvGettable, 0, (1 << 24) - 1, "XV_COLORKEY"},
+   {XvSettable | XvGettable, 0, (1 << 24) - 1, (char *)"XV_COLORKEY"},
 };
 
 SunxiVideo *SunxiVideo_Init(ScreenPtr pScreen)
@@ -278,13 +278,13 @@ SunxiVideo *SunxiVideo_Init(ScreenPtr pScreen)
     XF86VideoAdaptorPtr adapt;
 
     if (!disp || !disp->layer_has_scaler) {
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-                   "SunxiVideo_Init: no scalable layer available for XV\n");
+        INFO_MSG(
+                   "SunxiVideo_Init: no scalable layer available for XV");
         return NULL;
     }
 
     if (!(self = calloc(1, sizeof(SunxiVideo)))) {
-        xf86DrvMsg(pScreen->myNum, X_INFO, "SunxiVideo_Init: calloc failed\n");
+        INFO_MSG( "SunxiVideo_Init: calloc failed");
         return NULL;
     }
 

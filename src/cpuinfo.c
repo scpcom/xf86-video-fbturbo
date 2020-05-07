@@ -147,7 +147,7 @@ static int parse_proc_cpuinfo(cpuinfo_t *cpuinfo)
 
 #endif
 
-cpuinfo_t *cpuinfo_init()
+cpuinfo_t *cpuinfo_init(void)
 {
     cpuinfo_t *cpuinfo = calloc(sizeof(cpuinfo_t), 1);
     if (!cpuinfo)

@@ -245,10 +245,6 @@ static void xPutImage(DrawablePtr pDrawable,
         return;
     }
 
-    ScreenPtr pScreen = pDrawable->pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
-    SunxiG2D *private = SUNXI_G2D(pScrn);
-
     src = (FbStip *)pImage;
 
     x += pDrawable->x;
@@ -261,6 +257,9 @@ static void xPutImage(DrawablePtr pDrawable,
 
     for (nbox = RegionNumRects(pClip),
         pbox = RegionRects(pClip); nbox--; pbox++) {
+        Bool done;
+        int n_w, n_h;
+
         x1 = x;
         y1 = y;
         x2 = x + w;
@@ -275,16 +274,18 @@ static void xPutImage(DrawablePtr pDrawable,
             y2 = pbox->y2;
         if (x1 >= x2 || y1 >= y2)
             continue;
-        Bool done = FALSE;
-        int w = x2 - x1;
-        int h = y2 - y1;
+
+        done = FALSE;
+        n_w = x2 - x1;
+        n_h = y2 - y1;
+
         /* first try pixman (NEON) */
         if (!done) {
             done = pixman_blt((uint32_t *)src, (uint32_t *)dst, srcStride, dstStride,
                  dstBpp, dstBpp, x1 - x,
                  y1 - y, x1 + dstXoff,
-                 y1 + dstYoff, w,
-                 h);
+                 y1 + dstYoff, n_w,
+                 n_h);
         }
         /* otherwise fall back to fb */
         if (!done)
@@ -294,8 +295,8 @@ static void xPutImage(DrawablePtr pDrawable,
                   dst + (y1 + dstYoff) * dstStride,
                   dstStride,
                   (x1 + dstXoff) * dstBpp,
-                  w * dstBpp,
-                  h, GXcopy, FB_ALLONES, dstBpp, FALSE, FALSE);
+                  n_w * dstBpp,
+                  n_h, GXcopy, FB_ALLONES, dstBpp, FALSE, FALSE);
     }
     fbFinishAccess(pDrawable);
 }
@@ -306,7 +307,6 @@ xCreateGC(GCPtr pGC)
     ScreenPtr pScreen = pGC->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     SunxiG2D *self = SUNXI_G2D(pScrn);
-    Bool result;
 
     if (!fbCreateGC(pGC))
         return FALSE;
@@ -329,10 +329,11 @@ xCreateGC(GCPtr pGC)
 
 SunxiG2D *SunxiG2D_Init(ScreenPtr pScreen, blt2d_i *blt2d)
 {
+    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     SunxiG2D *private = calloc(1, sizeof(SunxiG2D));
     if (!private) {
-        xf86DrvMsg(pScreen->myNum, X_INFO,
-            "SunxiG2D_Init: calloc failed\n");
+        INFO_MSG(
+            "SunxiG2D_Init: calloc failed");
         return NULL;
     }
 

@@ -23,7 +23,14 @@
 # -avoid-version prevents gratuitous .0.0.0 version numbers on the end
 # _ladir passes a dummy rpath to libtool so the thing will actually link
 # TODO: -nostdlib/-Bstatic/-lgcc platform magic, not installing the .a, etc.
-AM_CFLAGS = @XORG_CFLAGS@
+# TODO: probably should have configure script check for what is supported..
+ERROR_CFLAGS = -Werror -Wall -Wdeclaration-after-statement -Wvla \
+	-Wpointer-arith -Wmissing-declarations -Wmissing-prototypes \
+	-Wwrite-strings -Wno-format-nonliteral  -Wformat-security \
+	-Wold-style-definition -Winit-self -Wmissing-include-dirs \
+	-Waddress -Waggregate-return -Wno-multichar -Wnested-externs
+ 
+AM_CFLAGS = @XORG_CFLAGS@ $(ERROR_CFLAGS)
 fbturbo_drv_la_LTLIBRARIES = fbturbo_drv.la
 fbturbo_drv_la_LDFLAGS = -module -avoid-version
 fbturbo_drv_ladir = @moduledir@/drivers

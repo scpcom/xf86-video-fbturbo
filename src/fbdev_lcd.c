@@ -147,9 +147,9 @@ static void fbdev_lcd_output_restore(xf86OutputPtr output)
 
 static int fbdev_lcd_output_mode_valid(xf86OutputPtr output, DisplayModePtr pMode)
 {
+	ScrnInfoPtr pScrn = output->scrn;
 	IGNORE(output);
 	IGNORE(pMode);
-	ScrnInfoPtr pScrn = output->scrn;
 
 	/* return MODE_ERROR in case of unsupported mode */
 	INFO_MSG("Mode %i x %i valid", pMode->HDisplay, pMode->VDisplay);
@@ -178,12 +178,12 @@ static void fbdev_lcd_output_commit(xf86OutputPtr output)
 
 static void fbdev_lcd_output_mode_set(xf86OutputPtr output, DisplayModePtr mode, DisplayModePtr adjusted_mode)
 {
+	ScrnInfoPtr pScrn = output->scrn;
 	FBDevPtr fPtr = FBDEVPTR(output->scrn);
 
 	IGNORE(output);
 	IGNORE(mode);
 	IGNORE(adjusted_mode);
-	ScrnInfoPtr pScrn = output->scrn;
 
 	if (ioctl(fPtr->fb_lcd_fd, FBIOGET_VSCREENINFO, &fPtr->fb_lcd_var) < 0)
 	{
@@ -320,8 +320,10 @@ static DisplayModePtr fbdev_lcd_output_get_modes(xf86OutputPtr output)
 	DisplayModePtr mode_ptr;
 	ScrnInfoPtr pScrn = output->scrn;
 
+#if 0
 	unsigned int hactive_s = fPtr->fb_lcd_var.xres;
 	unsigned int vactive_s = fPtr->fb_lcd_var.yres;
+#endif
 	float vrefresh = 60.0;
 
 	if (pScrn->modes != NULL)

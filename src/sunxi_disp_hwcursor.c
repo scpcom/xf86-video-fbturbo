@@ -164,7 +164,7 @@ SunxiDispHardwareCursor *SunxiDispHardwareCursor_Init(ScreenPtr pScreen)
         return NULL;
 
     if (!(InfoPtr = xf86CreateCursorInfoRec())) {
-        ErrorF("SunxiDispHardwareCursor_Init: xf86CreateCursorInfoRec() failed\n");
+        ERROR_STR("SunxiDispHardwareCursor_Init: xf86CreateCursorInfoRec() failed");
         return NULL;
     }
 
@@ -182,14 +182,14 @@ SunxiDispHardwareCursor *SunxiDispHardwareCursor_Init(ScreenPtr pScreen)
     InfoPtr->LoadCursorARGB = LoadCursorARGB;
 
     if (!xf86InitCursor(pScreen, InfoPtr)) {
-        ErrorF("SunxiDispHardwareCursor_Init: xf86InitCursor(pScreen, InfoPtr) failed\n");
+        ERROR_STR("SunxiDispHardwareCursor_Init: xf86InitCursor(pScreen, InfoPtr) failed");
         xf86DestroyCursorInfoRec(InfoPtr);
         return NULL;
     }
 
     private = calloc(1, sizeof(SunxiDispHardwareCursor));
     if (!private) {
-        ErrorF("SunxiDispHardwareCursor_Init: calloc failed\n");
+        ERROR_STR("SunxiDispHardwareCursor_Init: calloc failed");
         xf86DestroyCursorInfoRec(InfoPtr);
         return NULL;
     }

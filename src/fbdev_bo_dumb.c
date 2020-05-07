@@ -67,7 +67,7 @@ static struct drmmode_interface *get_drmmode_implementation(int drm_fd)
 	return ret;
 }
 
-Bool dumb_bo_open(FBTurboBODevice **dev, int drm_fd)
+static Bool dumb_bo_open(FBTurboBODevice **dev, int drm_fd)
 {
 	struct drmmode_interface *drmmode_interface;
 
@@ -86,7 +86,12 @@ Bool dumb_bo_open(FBTurboBODevice **dev, int drm_fd)
 	return FALSE;
 }
 
-FBTurboBOHandle dumb_bo_new(FBTurboBODevice *dev,
+static void dumb_bo_close(FBTurboBODevice *dev)
+{
+	armsoc_device_del(dev);
+}
+
+static FBTurboBOHandle dumb_bo_new(FBTurboBODevice *dev,
                         uint32_t width,
                         uint32_t height, uint8_t depth, uint8_t bpp,
                         FBTurboBOUsage usage)
@@ -101,47 +106,48 @@ FBTurboBOHandle dumb_bo_new(FBTurboBODevice *dev,
 	return handle;
 }
 
-void *dumb_bo_map(FBTurboBOHandle handle)
+static void *dumb_bo_map(FBTurboBOHandle handle)
 {
 	return armsoc_bo_map(handle);
 }
 
-void dumb_bo_unmap(FBTurboBOHandle handle)
+static void dumb_bo_unmap(FBTurboBOHandle handle)
 {
 	;;
 }
 
-FBTurboBOSecureID dumb_bo_secure_id_get(FBTurboBOHandle handle)
+static FBTurboBOSecureID dumb_bo_secure_id_get(FBTurboBOHandle handle)
 {
 	FBTurboBOSecureID name;
 	armsoc_bo_get_name(handle, &name);
 	return name;
 }
 
-void dumb_bo_release(FBTurboBOHandle handle)
+static void dumb_bo_release(FBTurboBOHandle handle)
 {
 	armsoc_bo_unreference(handle);
 }
 
-Bool dumb_bo_valid(FBTurboBOHandle handle)
+static Bool dumb_bo_valid(FBTurboBOHandle handle)
 {
 	return (handle != FBTURBO_BO_INVALID_HANDLE);
 }
 
-int dumb_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
+static int dumb_bo_switch_hw_usage(FBTurboBOHandle handle, Bool bCPU)
 {
 	int ret = 0;
 
 	return ret;
 }
 
-unsigned long dumb_bo_get_size_from_secure_id(FBTurboBOSecureID secure_id)
+static unsigned long dumb_bo_get_size_from_secure_id(FBTurboBOSecureID secure_id)
 {
 	return 0;
 }
 
 struct fbturbo_bo_ops dumb_bo_ops = {
 	.open = dumb_bo_open,
+	.close =  dumb_bo_close,
 	.new = dumb_bo_new,
 	.map = dumb_bo_map,
 	.unmap = dumb_bo_unmap,
