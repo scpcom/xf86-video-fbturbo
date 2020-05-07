@@ -50,6 +50,7 @@ typedef struct {
 	void				*shadow;
 	CloseScreenProcPtr		CloseScreen;
 	CreateScreenResourcesProcPtr	CreateScreenResources;
+	ScreenBlockHandlerProcPtr	BlockHandler;
 	void				(*PointerMoved)(SCRN_ARG_TYPE arg, int x, int y);
 	EntityInfoPtr			pEnt;
 	/* DGA info */
@@ -100,4 +101,19 @@ typedef struct {
                         (FBDEVPTR(p)->SunxiVideo_private))
 
 #define USE_CRTC_AND_LCD 0
+
+#define wrap(priv, real, mem, func) {\
+		priv->mem = real->mem; \
+		real->mem = func; \
+}
+
+#define unwrap(priv, real, mem) {\
+		real->mem = priv->mem; \
+}
+
+#define swap(priv, real, mem) {\
+		void *tmp = priv->mem; \
+		priv->mem = real->mem; \
+		real->mem = tmp; \
+}
 

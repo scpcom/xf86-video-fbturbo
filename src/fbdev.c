@@ -116,6 +116,7 @@ static Bool	FBDevPciProbe(DriverPtr drv, int entity_num,
 static Bool	FBDevPreInit(ScrnInfoPtr pScrn, int flags);
 static Bool	FBDevScreenInit(SCREEN_INIT_ARGS_DECL);
 static Bool	FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL);
+static void	FBDevBlockHandler(BLOCKHANDLER_ARGS_DECL);
 static void *	FBDevWindowLinear(ScreenPtr pScreen, CARD32 row, CARD32 offset, int mode,
 				  CARD32 *size, void *closure);
 static void	FBDevPointerMoved(SCRN_ARG_TYPE arg, int x, int y);
@@ -1507,6 +1508,9 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	fPtr->CloseScreen = pScreen->CloseScreen;
 	pScreen->CloseScreen = FBDevCloseScreen;
 
+	/* Wrap the current BlockHandler function */
+	wrap(fPtr, pScreen, BlockHandler, FBDevBlockHandler);
+
 #if XV
 	fPtr->SunxiVideo_private = NULL;
 	if (xf86ReturnOptValBool(fPtr->Options, OPTION_XV_OVERLAY, TRUE) &&
@@ -1647,6 +1651,18 @@ FBDevCloseScreen(CLOSE_SCREEN_ARGS_DECL)
 	pScreen->CreateScreenResources = fPtr->CreateScreenResources;
 	pScreen->CloseScreen = fPtr->CloseScreen;
 	return (*pScreen->CloseScreen)(CLOSE_SCREEN_ARGS);
+}
+
+static void
+FBDevBlockHandler(BLOCKHANDLER_ARGS_DECL)
+{
+	SCREEN_PTR(arg);
+	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	swap(fPtr, pScreen, BlockHandler);
+	(*pScreen->BlockHandler) (BLOCKHANDLER_ARGS);
+	swap(fPtr, pScreen, BlockHandler);
 }
 
 
