@@ -723,17 +723,27 @@ FBTurboOpenDRMCard(ScrnInfoPtr pScrn)
     }
 
     if (drm_fd < 0) {
+        drm_type = 3;
+        drm_fd = drmOpen("vc4", NULL);
+    }
+
+    if (drm_fd < 0) {
+	const char *dev;
 	char filename[32];
 
 	drm_type = 3;
 
-	/* open with card_num */
-	snprintf(filename, sizeof(filename),
-			DRM_DEVICE, connection.card_num);
-	INFO_STR(
-			"No BusID or DriverName specified - opening %s",
-			filename);
-	drm_fd = open(filename, O_RDWR, 0);
+        dev = getenv("KMSDEVICE");
+        if ((NULL == dev) || ((drm_fd = open(dev, O_RDWR | O_CLOEXEC, 0)) == -1)) {
+
+		/* open with card_num */
+		snprintf(filename, sizeof(filename),
+				DRM_DEVICE, connection.card_num);
+		INFO_STR(
+				"No BusID or DriverName specified - opening %s",
+				filename);
+		drm_fd = open(filename, O_RDWR, 0);
+	}
     }
 
     if (drm_fd < 0) {
