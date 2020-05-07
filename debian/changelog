@@ -1,4 +1,4 @@
-xserver-xorg-video-fbturbo (1.20140112-1) unstable; urgency=low
+xserver-xorg-video-fbturbo (1.20191115-1) unstable; urgency=low
 
   * Initial packaging. Based off 914fb08921
 
