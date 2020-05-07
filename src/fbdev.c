@@ -33,7 +33,15 @@
 #include "config.h"
 #endif
 
+#include <errno.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <linux/fb.h>
+
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 /* all driver need this */
 #include "xf86.h"
@@ -45,6 +53,7 @@
 #include "xf86cmap.h"
 #include "shadow.h"
 #include "dgaproc.h"
+#include "xf86Crtc.h"
 
 #include "cpu_backend.h"
 #include "fb_copyarea.h"
@@ -54,6 +63,12 @@
 #include "sunxi_x_g2d.h"
 #include "backing_store_tuner.h"
 #include "sunxi_video.h"
+
+#include "fbdev_lcd.h"
+
+#ifdef HAVE_LIBBCM_HOST
+#include "fbdev_vc4.h"
+#endif
 
 #ifdef HAVE_LIBUMP
 #include "sunxi_mali_ump_dri2.h"
@@ -79,10 +94,12 @@
 
 static Bool debug = 0;
 
+#if 0
 #define TRACE_ENTER(str) \
     do { if (debug) ErrorF("fbturbo: " str " %d\n",pScrn->scrnIndex); } while (0)
 #define TRACE_EXIT(str) \
     do { if (debug) ErrorF("fbturbo: " str " done\n"); } while (0)
+#endif
 #define TRACE(str) \
     do { if (debug) ErrorF("fbturbo trace: " str "\n"); } while (0)
 
@@ -236,6 +253,385 @@ FBDevSetup(pointer module, pointer opts, int *errmaj, int *errmin)
 
 #include "fbdev_priv.h"
 
+#define MAXBUFSIZE 16384
+
+static const char *textinfo_match_prefix(const char *s, const char *prefix)
+{
+    const char *result;
+    if (strncmp(s, prefix, strlen(prefix)) != 0)
+        return NULL;
+    result = s;
+    if (!result)
+        return NULL;
+    result += strlen(prefix);
+    while (*result && (*result == ' ' || *result == '\t'))
+        result++;
+    return result;
+}
+
+int parse_text_info(const char *filename, const char *prefix, const char *fmt, int *out)
+{
+    char *buffer = (char *)malloc(MAXBUFSIZE);
+    FILE *fd;
+    const char *val;
+
+    if (!buffer)
+        return 0;
+
+    DEBUG_STR(2, "Trying to open %s", filename);
+    fd = fopen(filename, "r");
+    if (!fd) {
+        free(buffer);
+        return 0;
+    }
+
+    DEBUG_STR(2, "Reading %s", filename);
+    while (fgets(buffer, MAXBUFSIZE, fd)) {
+        if (!strchr(buffer, '\n') && !feof(fd)) {
+            fclose(fd);
+            free(buffer);
+            return 0;
+        }
+        if ((val = textinfo_match_prefix(buffer, prefix))) {
+            DEBUG_STR(2, "match prefix %s, val %s", prefix, val);
+            int sret = sscanf(val, fmt, out);
+            DEBUG_STR(2, "sscanf(val, '%s', out) = %i", fmt, sret);
+            if (sret == 1) {
+                fclose(fd);
+                free(buffer);
+                return 1;
+            }
+        }
+    }
+    fclose(fd);
+    free(buffer);
+    return 0;
+}
+
+int fb_hw_init(ScrnInfoPtr pScrn, const char *device)
+{
+    FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+    /* use /dev/fb0 by default */
+    if (!device)
+        device = "/dev/fb0";
+
+    fPtr->fb_lcd_fd = open(device, O_RDWR);
+    if (fPtr->fb_lcd_fd < 0) {
+        ERROR_STR("%s failed to open %s", __func__, device);
+        close(fPtr->fb_lcd_fd);
+        return 0;
+    }
+
+    if (ioctl(fPtr->fb_lcd_fd, FBIOGET_FSCREENINFO, &fPtr->fb_lcd_fix))
+    {
+        ERROR_STR("%s FBIOGET_FSCREENINFO failed for %s!", __func__, device);
+        return 0;
+    }
+
+    if (ioctl(fPtr->fb_lcd_fd, FBIOGET_VSCREENINFO, &fPtr->fb_lcd_var))
+    {
+        ERROR_STR("%s FBIOGET_VSCREENINFO failed for %s!", __func__, device);
+        return 0;
+    }
+
+
+    return 1;
+}
+
+static Bool fbdev_crtc_config_resize(ScrnInfoPtr pScrn, int width, int height)
+{
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+	xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
+	int pitch, i;
+
+	INFO_MSG("%s: width = %d height = %d", __FUNCTION__, width, height);
+
+	return TRUE;
+}
+
+static const xf86CrtcConfigFuncsRec fbdev_crtc_config_funcs =
+{
+	.resize = fbdev_crtc_config_resize,
+};
+
+static void FBDev_crtc_config(ScrnInfoPtr pScrn)
+{
+	xf86CrtcConfigPtr xf86_config;
+	int max_width, max_height;
+	TRACE_ENTER();
+
+	/* Allocate an xf86CrtcConfig */
+	xf86CrtcConfigInit(pScrn, &fbdev_crtc_config_funcs);
+	xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
+
+	max_width = 4096;
+	max_height = 4096;
+
+	xf86CrtcSetSizeRange(pScrn, 640, 480, max_width, max_height);
+	TRACE_EXIT();
+}
+
+#if USE_CRTC_AND_LCD
+Bool FBTurboHWSetMode(ScrnInfoPtr pScrn, DisplayModePtr mode, Bool check)
+{
+        FBTurboHWPtr fPtr = FBTURBOHWPTR(pScrn);
+
+        TRACE_ENTER();
+
+        IGNORE(fPtr);
+        IGNORE(mode);
+        IGNORE(check);
+
+        return TRUE;
+}
+
+Bool FBTurboHWModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode)
+{
+        FBTurboHWPtr fPtr = FBTURBOHWPTR(pScrn);
+
+        TRACE_ENTER();
+
+        pScrn->vtSema = TRUE;
+
+        if (!FBTurboHWSetMode(pScrn, mode, FALSE))
+        {
+                return FALSE;
+        }
+
+        if (0 != ioctl(fPtr->fb_lcd_fd, FBIOGET_FSCREENINFO, (void *)(&fPtr->fb_lcd_fix)))
+        {
+                ERROR_MSG("FBIOGET_FSCREENINFO: %s\n", strerror(errno));
+                return FALSE;
+        }
+
+        if (0 != ioctl(fPtr->fb_lcd_fd, FBIOGET_VSCREENINFO, (void *)(&fPtr->fb_lcd_var)))
+        {
+                ERROR_MSG("FBIOGET_VSCREENINFO: %s\n", strerror(errno));
+                return FALSE;
+        }
+
+        if (pScrn->defaultVisual == TrueColor || pScrn->defaultVisual == DirectColor)
+        {
+                pScrn->offset.red   = fPtr->fb_lcd_var.red.offset;
+                pScrn->offset.green = fPtr->fb_lcd_var.green.offset;
+                pScrn->offset.blue  = fPtr->fb_lcd_var.blue.offset;
+                pScrn->mask.red     = ((1 << fPtr->fb_lcd_var.red.length) - 1) << fPtr->fb_lcd_var.red.offset;
+                pScrn->mask.green   = ((1 << fPtr->fb_lcd_var.green.length) - 1) << fPtr->fb_lcd_var.green.offset;
+                pScrn->mask.blue    = ((1 << fPtr->fb_lcd_var.blue.length) - 1) << fPtr->fb_lcd_var.blue.offset;
+        }
+
+        return TRUE;
+}
+#else
+#define FBTurboHWModeInit fbdevHWModeInit
+#endif
+
+void FBTurboFBListVideoMode(ScrnInfoPtr pScrn, DisplayModePtr mode, char *msg);
+
+void FBTurboFBSetVideoModes(ScrnInfoPtr pScrn)
+{
+	FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	TRACE_ENTER();
+
+	if (NULL == pScrn->modes)
+	{
+		int v_w = 0;
+		int v_h = 0;
+		int val = 0;
+		float vrefresh = 60.0;
+
+		DisplayModePtr fbdev_mode = fbdevHWGetBuildinMode(pScrn);
+
+		if (fbdev_mode && fbdev_mode->VRefresh)
+		{
+			vrefresh = fbdev_mode->VRefresh;
+			INFO_MSG("Got rate %.0f from fbdevHW vrefresh", vrefresh);
+			val = 0;
+		}
+		else if (parse_text_info("/sys/devices/platform/meson-fb/graphics/fb0/flush_rate", "flush_rate:", "[%i]", &val))
+			INFO_MSG("Got rate %i from platform/meson-fb", val);
+		else if (parse_text_info("/sys/class/video/frame_rate", "VF.fps=", "%*f panel fps %i,", &val))
+			INFO_MSG("Got rate %i from class/video", val);
+#ifdef HAVE_LIBBCM_HOST
+		else if (vc_vchi_tv_get_status(&v_w, &v_h, &vrefresh))
+		{
+			INFO_MSG("Got rate %.0f from vchi_tv", vrefresh);
+			val = 0;
+		}
+#endif
+		else
+			val = 0;
+
+		if (val)
+			vrefresh = val;
+
+		INFO_MSG("Adding current mode: %i x %i %.0f", fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh);
+		DEBUG_MSG(1, "pclock %i lm %i rm %i um %i lm %i hl %i vl %i sy %i vm %i",
+	          fPtr->fb_lcd_var.pixclock,                 /* pixel clock in ps (pico seconds) */
+	          fPtr->fb_lcd_var.left_margin,              /* time from sync to picture    */
+	          fPtr->fb_lcd_var.right_margin,             /* time from picture to sync    */
+	          fPtr->fb_lcd_var.upper_margin,             /* time from sync to picture    */
+	          fPtr->fb_lcd_var.lower_margin,
+	          fPtr->fb_lcd_var.hsync_len,                /* length of horizontal sync    */
+	          fPtr->fb_lcd_var.vsync_len,                /* length of vertical sync      */
+	          fPtr->fb_lcd_var.sync,                     /* see FB_SYNC_*                */
+	          fPtr->fb_lcd_var.vmode);                    /* see FB_VMODE_*               */
+
+		if (fbdev_mode && fbdev_mode->HDisplay && fbdev_mode->VDisplay)
+		{
+			fbdev_copy_mode(fbdev_mode, &fPtr->buildin);
+
+			if (!fPtr->buildin.VRefresh && fPtr->buildin.Clock)
+			{
+				vrefresh = 1000.0 * ((float) fPtr->buildin.Clock) / ((float) fPtr->buildin.VTotal) / ((float) fPtr->buildin.HTotal);
+				fPtr->buildin.VRefresh = vrefresh;
+				INFO_MSG("Got rate %.0f from fbdevHW pixelclock/vtotal/htotal", vrefresh);
+			}
+
+			if (!fPtr->buildin.HSync && fPtr->buildin.Clock)
+			{
+				fPtr->buildin.HSync = ((float) fPtr->buildin.Clock) / ((float) fPtr->buildin.HTotal);
+			}
+
+			FBTurboFBListVideoMode(pScrn, &fPtr->buildin, "Buildin mode:");
+
+			if (!fPtr->buildin.VRefresh)
+			{
+				INFO_MSG("buildin has no VRefresh, using xf86CVTMode to create a mode");
+				fbdev_mode = xf86CVTMode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, TRUE, FALSE);
+				fbdev_copy_mode(fbdev_mode, &fPtr->buildin);
+				fPtr->buildin.type |= M_T_BUILTIN;
+				fbdev_fill_crtc_mode(&fPtr->buildin, fbdev_mode->HDisplay, fbdev_mode->VDisplay, fbdev_mode->VRefresh, M_T_BUILTIN, NULL);
+			}
+			xf86SetModeDefaultName(&fPtr->buildin);
+		}
+		else
+		{
+			INFO_MSG("creating internal mode based on vrefresh %.0f", vrefresh);
+			fbdev_fill_mode(&fPtr->buildin, fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, M_T_BUILTIN, NULL);
+		}
+
+		pScrn->modes = fbdev_make_mode(fPtr->fb_lcd_var.xres, fPtr->fb_lcd_var.yres, vrefresh, M_T_BUILTIN, NULL);
+		fbdev_copy_mode(&fPtr->buildin, pScrn->modes);
+		FBTurboFBListVideoMode(pScrn, pScrn->modes, "New buildin mode:");
+	}
+}
+
+
+void FBTurboFBListVideoMode(ScrnInfoPtr pScrn, DisplayModePtr mode, char *msg)
+{
+        FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+	if (mode)
+	{
+			int xres = mode->HDisplay;
+			int yres = mode->VDisplay;
+			int pclk = mode->Clock;
+			float vref = mode->VRefresh;
+
+			DEBUG_MSG(1, "%s %i x %i %.0f %i", msg, xres, yres, vref, pclk);
+
+			if (!vref)
+			{
+				vref = 60.0;
+				pclk = (int)(vref * mode->VTotal * mode->HTotal / 1000.0);
+				float vrev = 1000.0 * pclk / mode->VTotal / mode->HTotal;
+				DEBUG_MSG(1, "new vref %.2f pclk %i vrev %.2f", vref, pclk, vrev);
+			}
+
+			DEBUG_MSG(1, "t %i, name %s, hs %.1f vr %.1f",
+				mode->type,
+				mode->name,
+				mode->HSync,
+				mode->VRefresh);
+
+			DEBUG_MSG(1, "sees hd %i hss %i hse %i ht %i, hsk %i, vd %i vss %i vse %i vt %i, c %i",
+				mode->HDisplay,
+				mode->HSyncStart,
+				mode->HSyncEnd,
+				mode->HTotal,
+				mode->HSkew,
+				mode->VDisplay,
+				mode->VSyncStart,
+				mode->VSyncEnd,
+				mode->VTotal,
+				mode->Clock);
+
+			DEBUG_MSG(1, "sees vs %i f 0x%x (%i)",
+				mode->VScan,
+				mode->Flags, mode->Flags);
+
+			DEBUG_MSG(1, "crtc hd %i hss %i hse %i ht %i, hsk %i, vd %i vss %i vse %i vt %i, c %i",
+				mode->CrtcHDisplay,
+				mode->CrtcHSyncStart,
+				mode->CrtcHSyncEnd,
+				mode->CrtcHTotal,
+				mode->CrtcHSkew,
+				mode->CrtcVDisplay,
+				mode->CrtcVSyncStart,
+				mode->CrtcVSyncEnd,
+				mode->CrtcVTotal,
+				mode->ClockIndex);
+
+			DEBUG_MSG(1, "crtc hbs %i hbe %i, vbs %i vbe %i",
+				mode->CrtcHBlankStart,
+				mode->CrtcHBlankEnd,
+				mode->CrtcVBlankStart,
+				mode->CrtcVBlankEnd);
+	}
+}
+
+void FBTurboFBListVideoModes(ScrnInfoPtr pScrn, DisplayModePtr modes)
+{
+        FBDevPtr fPtr = FBDEVPTR(pScrn);
+
+        TRACE_ENTER();
+
+        if (modes)
+        {
+                DisplayModePtr mode, first = mode = modes;
+
+                do
+                {
+			FBTurboFBListVideoMode(pScrn, mode, "Having mode:");
+ 
+			mode = mode->next;
+		}
+		while (mode != NULL && mode != first);
+	}
+
+	TRACE_EXIT();
+}
+
+#ifndef FBTurboHWUseBuildinMode
+void FBTurboHWUseBuildinMode(ScrnInfoPtr pScrn)
+{
+	FBTurboHWPtr fPtr = FBTURBOHWPTR(pScrn);
+
+	TRACE_ENTER();
+
+	FBTurboFBSetVideoModes(pScrn);
+
+        pScrn->modes    = &fPtr->buildin;
+        pScrn->virtualX = pScrn->display->virtualX;
+        pScrn->virtualY = pScrn->display->virtualY;
+
+        if (pScrn->virtualX < fPtr->buildin.HDisplay)
+        {
+                pScrn->virtualX = fPtr->buildin.HDisplay;
+        }
+
+        if (pScrn->virtualY < fPtr->buildin.VDisplay)
+        {
+                pScrn->virtualY = fPtr->buildin.VDisplay;
+        }
+
+	TRACE_EXIT();
+}
+#endif
+
 static Bool
 FBDevGetRec(ScrnInfoPtr pScrn)
 {
@@ -282,12 +678,12 @@ static Bool FBDevPciProbe(DriverPtr drv, int entity_num,
     pScrn = xf86ConfigPciEntity(NULL, 0, entity_num, NULL, NULL,
 				NULL, NULL, NULL, NULL);
     if (pScrn) {
-	char *device;
+	const char *device;
 	GDevPtr devSection = xf86GetDevFromEntity(pScrn->entityList[0],
 						  pScrn->entityInstanceList[0]);
 
 	device = xf86FindOptionValue(devSection->options, "fbdev");
-	if (fbdevHWProbe(NULL, device, NULL)) {
+	if (fbdevHWProbe(NULL, (char*)device, NULL)) {
 	    pScrn->driverVersion = FBDEV_VERSION;
 	    pScrn->driverName    = FBDEV_DRIVER_NAME;
 	    pScrn->name          = FBDEV_NAME;
@@ -326,7 +722,7 @@ FBDevProbe(DriverPtr drv, int flags)
 #ifndef XSERVER_LIBPCIACCESS
 	int bus,device,func;
 #endif
-	char *dev;
+	const char *dev;
 	Bool foundScreen = FALSE;
 
 	TRACE("probe start");
@@ -363,7 +759,7 @@ FBDevProbe(DriverPtr drv, int flags)
 		    0;
 		  
 	    }
-	    if (fbdevHWProbe(NULL,dev,NULL)) {
+	    if (fbdevHWProbe(NULL,(char*)dev,NULL)) {
 		pScrn = NULL;
 		if (isPci) {
 #ifndef XSERVER_LIBPCIACCESS
@@ -432,6 +828,7 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 {
 	FBDevPtr fPtr;
 	int default_depth, fbbpp;
+	const char *device;
 	const char *s;
 	int type;
 	cpuinfo_t *cpuinfo;
@@ -463,8 +860,9 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 		return FALSE;
 	}
 #endif
+	device = xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev");
 	/* open device */
-	if (!fbdevHWInit(pScrn,NULL,xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev")))
+	if (!fbdevHWInit(pScrn,NULL,(char*)device))
 		return FALSE;
 	default_depth = fbdevHWGetDepth(pScrn,&fbbpp);
 	if (!xf86SetDepthBpp(pScrn, default_depth, default_depth, fbbpp,
@@ -567,12 +965,44 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	  }
 	}
 
+	if (!fb_hw_init(pScrn, xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev")))
+	{
+		ERROR_MSG("fb_hw_init failed");
+		return FALSE;
+	}
+
+#if USE_CRTC_AND_LCD
+	pScrn->frameX0 = 0;
+	pScrn->frameY0 = 0;
+	pScrn->frameX1 = fPtr->fb_lcd_var.xres;
+	pScrn->frameY1 = fPtr->fb_lcd_var.yres;
+
+	DEBUG_MSG(1, "FBDev_crtc_config");
+	FBDev_crtc_config(pScrn);
+
+	FBTurboFBSetVideoModes(pScrn);
+
+	DEBUG_MSG(1, "FBDEV_lcd_init");
+	if (!FBDEV_lcd_init(pScrn))
+	{
+		ERROR_MSG("FBDev_lcd_init failed!");
+		return FALSE;
+	}
+
+	DEBUG_MSG(1, "xf86InitialConfiguration");
+	if (!xf86InitialConfiguration(pScrn, TRUE))
+	{
+		ERROR_MSG("xf86InitialConfiguration failed!");
+		return FALSE;
+	}
+#endif
+
 	/* select video modes */
 
-	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "checking modes against framebuffer device...\n");
-	fbdevHWSetVideoModes(pScrn);
+	INFO_MSG("checking modes against framebuffer device...");
+	FBTurboHWSetVideoModes(pScrn);
 
-	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "checking modes against monitor...\n");
+	INFO_MSG("checking modes against monitor...");
 	{
 		DisplayModePtr mode, first = mode = pScrn->modes;
 		
@@ -585,11 +1015,16 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	}
 
 	if (NULL == pScrn->modes)
-		fbdevHWUseBuildinMode(pScrn);
+	{
+		DEBUG_MSG(1, "FBTurboHWUseBuildinMode");
+		FBTurboHWUseBuildinMode(pScrn);
+	}
 	pScrn->currentMode = pScrn->modes;
 
 	/* First approximation, may be refined in ScreenInit */
 	pScrn->displayWidth = pScrn->virtualX;
+
+	FBTurboFBListVideoModes(pScrn, pScrn->modes);
 
 	xf86PrintModes(pScrn);
 
@@ -637,6 +1072,7 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
                           "unrecognised fbdev hardware type (%d)\n", type);
                return FALSE;
 	}
+
 	if (xf86LoadSubModule(pScrn, "fb") == NULL) {
 		FBDevFreeRec(pScrn);
 		return FALSE;
@@ -709,7 +1145,7 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 	int init_picture = 0;
 	int ret, flags;
 	int type;
-	char *accelmethod;
+	const char *accelmethod;
 	cpu_backend_t *cpu_backend;
 	Bool useBackingStore = FALSE, forceBackingStore = FALSE;
 
@@ -734,16 +1170,31 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 
 	fbdevHWSave(pScrn);
 
-	if (!fbdevHWModeInit(pScrn, pScrn->currentMode)) {
+	DEBUG_MSG(1, "FBTurboHWModeInit");
+	if (!FBTurboHWModeInit(pScrn, pScrn->currentMode)) {
 		xf86DrvMsg(pScrn->scrnIndex,X_ERROR,"mode initialization failed\n");
 		return FALSE;
 	}
+
 	fbdevHWSaveScreen(pScreen, SCREEN_SAVER_ON);
 	fbdevHWAdjustFrame(ADJUST_FRAME_ARGS(pScrn, 0, 0));
 
 	/* mi layer */
+	DEBUG_MSG(1, "miClearVisualTypes");
 	miClearVisualTypes();
+#if USE_CRTC_AND_LCD
+	if (pScrn->bitsPerPixel > 25)
+	{
+		DEBUG_MSG(1, "miSetVisualTypes %i", 32);
+		if (!miSetVisualTypes(32, TrueColorMask, pScrn->rgbBits, TrueColor))
+		{
+			ERROR_MSG("visual type setup failed for %d bits per pixel [1]", pScrn->bitsPerPixel);
+			return FALSE;
+		}
+	} else
+#endif
 	if (pScrn->bitsPerPixel > 8) {
+		DEBUG_MSG(1, "miSetVisualTypes %i", pScrn->depth);
 		if (!miSetVisualTypes(pScrn->depth, TrueColorMask, pScrn->rgbBits, TrueColor)) {
 			xf86DrvMsg(pScrn->scrnIndex,X_ERROR,"visual type setup failed"
 				   " for %d bits per pixel [1]\n",
@@ -751,6 +1202,7 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 			return FALSE;
 		}
 	} else {
+		DEBUG_MSG(1, "miSetVisualTypes %i", pScrn->depth);
 		if (!miSetVisualTypes(pScrn->depth,
 				      miGetDefaultVisualMask(pScrn->depth),
 				      pScrn->rgbBits, pScrn->defaultVisual)) {
@@ -760,6 +1212,7 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 			return FALSE;
 		}
 	}
+	DEBUG_MSG(1, "miSetPixmapDepths");
 	if (!miSetPixmapDepths()) {
 	  xf86DrvMsg(pScrn->scrnIndex,X_ERROR,"pixmap depth setup failed\n");
 	  return FALSE;
@@ -987,9 +1440,23 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 
 	xf86SetBlackWhitePixels(pScreen);
 	xf86SetBackingStore(pScreen);
+	DEBUG_MSG(1, "xf86SetSilkenMouse");
+	xf86SetSilkenMouse(pScreen);
 
 	/* software cursor */
 	miDCInitialize(pScreen, xf86GetPointerScreenFuncs());
+
+#if USE_CRTC_AND_LCD
+	DEBUG_MSG(1, "xf86SetDesiredModes");
+	xf86SetDesiredModes(pScrn);
+
+	DEBUG_MSG(1, "xf86CrtcScreenInit");
+	if (!xf86CrtcScreenInit(pScreen))
+	{
+		ERROR_MSG("xf86CrtcScreenInit failed");
+		return FALSE;
+	}
+#endif
 
 	/* colormap */
 	switch ((type = fbdevHWGetType(pScrn)))
@@ -1024,11 +1491,15 @@ FBDevScreenInit(SCREEN_INIT_ARGS_DECL)
 			   "(%d) encountered in FBDevScreenInit()\n", type);
 		return FALSE;
 	}
+
 	flags = CMAP_PALETTED_TRUECOLOR;
-	if(!xf86HandleColormaps(pScreen, 256, 8, fbdevHWLoadPaletteWeak(), 
+
+	DEBUG_MSG(1, "xf86HandleColormaps");
+	if(!xf86HandleColormaps(pScreen, 256, 8, FBTurboHWLoadPalette, 
 				NULL, flags))
 		return FALSE;
 
+	DEBUG_MSG(1, "xf86DPMSInit");
 	xf86DPMSInit(pScreen, fbdevHWDPMSSetWeak(), 0);
 
 	pScreen->SaveScreen = fbdevHWSaveScreenWeak();
@@ -1325,6 +1796,9 @@ FBDevDGAAddModes(ScrnInfoPtr pScrn)
     DGAModePtr pDGAMode;
 
     do {
+	if (!pMode)
+	    break;
+
 	pDGAMode = realloc(fPtr->pDGAMode,
 		           (fPtr->nDGAMode + 1) * sizeof(DGAModeRec));
 	if (!pDGAMode)

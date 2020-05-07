@@ -108,6 +108,30 @@ if test "x$have_libump" = xno; then
     CFLAGS="$save_CFLAGS"
 fi
 
+bsave_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -I/opt/vc/include"
+
+AC_CHECK_HEADER([interface/vmcs_host/vc_tvservice.h], [have_libbcm_host=yes], [have_libbcm_host=no])
+
+if test "x$have_libbcm_host" = xyes; then
+    bsave_LIBS="$LIBS"
+    LIBS="$LIBS -L/opt/vc/lib -lvcos -lvchiq_arm"
+    AC_CHECK_LIB([bcm_host], [vchi_initialise], [have_libbcm_host=yes], [have_libbcm_host=no])
+    LIBS="$bsave_LIBS"
+fi
+
+if test "x$have_libbcm_host" = xyes; then
+    LIBS="$LIBS -L/opt/vc/lib -lbcm_host -lvchiq_arm -lvcos"
+    AC_DEFINE(HAVE_LIBBCM_HOST,[1],[libbcm_host library])
+fi
+
+AM_CONDITIONAL([HAVE_LIBBCM_HOST], [test x$have_libbcm_host = xyes])
+
+# revert back to the original CFLAGS if not messing with libbcm_host
+if test "x$have_libbcm_host" = xno; then
+    CFLAGS="$bsave_CFLAGS"
+fi
+
 AC_SUBST([moduledir])
 
 DRIVER_NAME=fbturbo

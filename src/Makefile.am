@@ -43,6 +43,9 @@ fbturbo_drv_la_SOURCES = \
          interfaces.h \
          fbdev.c \
          fbdev_priv.h \
+         fb_debug.h \
+         fbdev_lcd.c \
+         fbdev_lcd.h \
          sunxi_disp.c \
          sunxi_disp.h \
          sunxi_x_g2d.c \
@@ -53,6 +56,11 @@ fbturbo_drv_la_SOURCES = \
          sunxi_video.h \
          sunxi_disp_ioctl.h \
          g2d_driver.h
+
+if HAVE_LIBBCM_HOST
+fbturbo_drv_la_SOURCES += \
+         fbdev_vc4.c
+endif
 
 if HAVE_LIBUMP
 fbturbo_drv_la_SOURCES += \

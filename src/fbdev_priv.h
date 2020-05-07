@@ -30,12 +30,15 @@
  */
 
 #include "compat-api.h"
+#include <linux/fb.h>
 
 #ifdef DEBUG
 #define DebugMsg(...) ErrorF(__VA_ARGS__)
 #else
 #define DebugMsg(...)
 #endif
+
+#include "fb_debug.h"
 
 typedef struct {
 	unsigned char*			fbstart;
@@ -62,9 +65,21 @@ typedef struct {
 	void				*SunxiMaliDRI2_private;
 	void				*SunxiG2D_private;
 	void				*SunxiVideo_private;
+
+        int    fb_lcd_fd;
+        struct fb_fix_screeninfo fb_lcd_fix;
+        struct fb_var_screeninfo fb_lcd_var;
+        DisplayModeRec buildin;
 } FBDevRec, *FBDevPtr;
 
 #define FBDEVPTR(p) ((FBDevPtr)((p)->driverPrivate))
+
+#define FBTurboHWPtr FBDevPtr
+#define FBTURBOHWPTR FBDEVPTR
+
+#define FBTurboHWLoadPalette fbdevHWLoadPaletteWeak()
+#define FBTurboHWSetVideoModes fbdevHWSetVideoModes
+//undefine FBTurboHWUseBuildinMode fbdevHWUseBuildinMode
 
 #define BACKING_STORE_TUNER(p) ((BackingStoreTuner *) \
                        (FBDEVPTR(p)->backing_store_tuner_private))
@@ -83,3 +98,6 @@ typedef struct {
 
 #define SUNXI_VIDEO(p) ((SunxiVideo *) \
                         (FBDEVPTR(p)->SunxiVideo_private))
+
+#define USE_CRTC_AND_LCD 0
+

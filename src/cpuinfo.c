@@ -158,7 +158,9 @@ cpuinfo_t *cpuinfo_init()
         return cpuinfo;
     }
 
-    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC0F) {
+    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD03) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A53");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC0F) {
         cpuinfo->processor_name = strdup("ARM Cortex-A15");
     } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC09) {
         if (cpuinfo->has_arm_neon)
