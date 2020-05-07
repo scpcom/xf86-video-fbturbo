@@ -158,8 +158,24 @@ cpuinfo_t *cpuinfo_init(void)
         return cpuinfo;
     }
 
-    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD03) {
+    if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD0B) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A76");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD0A) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A75");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD09) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A73");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD08) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A72");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD07) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A57");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD05) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A55");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD04) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A35");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD03) {
         cpuinfo->processor_name = strdup("ARM Cortex-A53");
+    } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xD01) {
+        cpuinfo->processor_name = strdup("ARM Cortex-A32");
     } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC0F) {
         cpuinfo->processor_name = strdup("ARM Cortex-A15");
     } else if (cpuinfo->arm_implementer == 0x41 && cpuinfo->arm_part == 0xC09) {
