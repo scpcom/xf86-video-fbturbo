@@ -1078,6 +1078,16 @@ static const char *driverNames[1] = {
     "lima" /* DRI2DriverDRI */
 };
 
+static const char *driverNamesMeson[2] = {
+    "meson", /* DRI2DriverDRI */
+    "v4l2_request" /* DRI2DriverV4L2Request */
+};
+
+static const char *driverNamesSun4i[2] = {
+    "sun4i", /* DRI2DriverDRI */
+    "v4l2_request" /* DRI2DriverV4L2Request */
+};
+
 static const char *driverNamesWithVDPAU[2] = {
     "lima", /* DRI2DriverDRI */
     "sunxi" /* DRI2DriverVDPAU */
@@ -1088,6 +1098,7 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bSwapbuffersWait)
 {
     int drm_fd;
+    int drm_type = 0;
     DRI2InfoRec info = { 0 };
     FBTurboMaliDRI2 *mali;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
@@ -1108,6 +1119,16 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         return NULL;
 
     if ((drm_fd = drmOpen("mali_drm", NULL)) < 0) {
+        drm_type = 1;
+        drm_fd = drmOpen("sun4i-drm", NULL);
+    }
+
+    if (drm_fd < 0) {
+        drm_type = 2;
+        drm_fd = drmOpen("meson", NULL);
+    }
+
+    if (drm_fd < 0) {
         ErrorF("FBTurboMaliDRI2_Init: drmOpen failed!\n");
         return NULL;
     }
@@ -1191,7 +1212,17 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
 
     info.version = 4;
 
-    if (have_sunxi_cedar) {
+    if (drm_type == 2) {
+        info.numDrivers = ARRAY_SIZE(driverNamesMeson);
+        info.driverName = driverNamesMeson[0];
+        info.driverNames = driverNamesMeson;
+    }
+    else if (drm_type == 1) {
+        info.numDrivers = ARRAY_SIZE(driverNamesSun4i);
+        info.driverName = driverNamesSun4i[0];
+        info.driverNames = driverNamesSun4i;
+    }
+    else if (have_sunxi_cedar) {
         info.numDrivers = ARRAY_SIZE(driverNamesWithVDPAU);
         info.driverName = driverNamesWithVDPAU[0];
         info.driverNames = driverNamesWithVDPAU;
