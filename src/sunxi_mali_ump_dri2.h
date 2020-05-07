@@ -24,19 +24,18 @@
 #ifndef FBTURBO_MALI_DRI2_H
 #define FBTURBO_MALI_DRI2_H
 
-#include <ump/ump.h>
-#include <ump/ump_ref_drv.h>
+#include "fbdev_bo.h"
 
 #include "uthash.h"
 
-#define UMPBUF_MUST_BE_ODD_FRAME  1
-#define UMPBUF_MUST_BE_EVEN_FRAME 2
-#define UMPBUF_PASSED_ORDER_CHECK 4
+#define BO_MUST_BE_ODD_FRAME  1
+#define BO_MUST_BE_EVEN_FRAME 2
+#define BO_PASSED_ORDER_CHECK 4
 
-/* The number of bytes randomly sampled from UMP buffer to detect its change */
+/* The number of bytes randomly sampled from BO to detect its change */
 #define RANDOM_SAMPLES_COUNT      64
 
-/* Data structure with the information about an UMP buffer */
+/* Data structure with the information about an BO */
 typedef struct
 {
     /* The migrated pixmap (may be NULL if it is a window) */
@@ -46,15 +45,16 @@ typedef struct
     int                     refcount;
     UT_hash_handle          hh;
 
-    ump_handle              handle;
+    FBTurboBOHandle         handle;
     size_t                  size;
     uint8_t                *addr;
     int                     depth;
     size_t                  width;
     size_t                  height;
+    uint8_t                 bpp;
     int                     extra_flags;
 
-    ump_secure_id           secure_id;
+    FBTurboBOSecureID       secure_id;
     unsigned int            pitch;
     unsigned int            cpp;
     unsigned int            offs;
@@ -63,7 +63,7 @@ typedef struct
     Bool                    has_checksum;
     uint32_t                checksum;
     uint32_t                checksum_seed;
-} UMPBufferInfoRec, *UMPBufferInfoPtr;
+} BOInfoRec, *BOInfoPtr;
 
 /*
  * DRI2 related bookkeeping for windows. Because Mali r3p0 blob has
@@ -98,20 +98,20 @@ typedef struct
     /* the number of back/front buffer swaps */
     unsigned int            buf_swap_cnt;
 
-    /* allocated UMP buffer (shared between back and front DRI2 buffers) */
-    UMPBufferInfoPtr        ump_mem_buffer_ptr;
+    /* allocated BO (shared between back and front DRI2 buffers) */
+    BOInfoPtr               bo_mem_ptr;
 
-    /* UMP buffers for hardware overlay and double buffering */
-    UMPBufferInfoPtr        ump_back_buffer_ptr;
-    UMPBufferInfoPtr        ump_front_buffer_ptr;
+    /* BOs for hardware overlay and double buffering */
+    BOInfoPtr               bo_back_ptr;
+    BOInfoPtr               bo_front_ptr;
 
     /*
-     * The queue for incoming UMP buffers. We need to have it because DRI2
+     * The queue for incoming BOs. We need to have it because DRI2
      * buffer requests and buffer swaps sometimes may come out of order.
      */
-    UMPBufferInfoPtr        ump_queue[16];
-    int                     ump_queue_head;
-    int                     ump_queue_tail;
+    BOInfoPtr               bo_queue[16];
+    int                     bo_queue_head;
+    int                     bo_queue_tail;
 
     /*
      * In the case DEBUG_WITH_RGB_PATTERN is defined, we add extra debugging
@@ -131,7 +131,7 @@ typedef struct {
     int                     overlay_y;
 
     WindowPtr               pOverlayWin;
-    UMPBufferInfoPtr        pOverlayDirtyUMP;
+    BOInfoPtr               pOverlayDirtyBO;
     Bool                    bOverlayWinEnabled;
     Bool                    bOverlayWinOverlapped;
     Bool                    bWalkingAboveOverlayWin;
@@ -146,26 +146,30 @@ typedef struct {
     DestroyPixmapProcPtr    DestroyPixmap;
 
     /* the primary UMP secure id for accessing framebuffer */
-    ump_secure_id           ump_fb_secure_id;
+    FBTurboBOSecureID       ump_fb_secure_id;
     /* the alternative UMP secure id used for the window resize workaround */
-    ump_secure_id           ump_alternative_fb_secure_id;
+    FBTurboBOSecureID       ump_alternative_fb_secure_id;
     /* the UMP secure id for a dummy buffer */
-    ump_secure_id           ump_null_secure_id;
-    ump_handle              ump_null_handle1;
-    ump_handle              ump_null_handle2;
+    FBTurboBOSecureID       bo_null_secure_id;
+    FBTurboBOHandle         bo_null_handle1;
+    FBTurboBOHandle         bo_null_handle2;
 
-    UMPBufferInfoPtr        HashPixmapToUMP;
+    BOInfoPtr               HashPixmapToBO;
     DRI2WindowStatePtr      HashWindowState;
 
     int                     drm_fd;
 
     /* Wait for vsync when swapping DRI2 buffers */
     Bool                    bSwapbuffersWait;
+
+    FBTurboBODevice        *dev;
+    FBTurboBOOps           *bo_ops;
 } FBTurboMaliDRI2;
 
 FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseOverlay,
-                                  Bool      bSwapbuffersWait);
+                                  Bool      bSwapbuffersWait,
+                                  Bool      bUseDumb);
 void FBTurboMaliDRI2_Close(ScreenPtr pScreen);
 
 #endif

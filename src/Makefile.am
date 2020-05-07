@@ -29,6 +29,8 @@ fbturbo_drv_la_LDFLAGS = -module -avoid-version
 fbturbo_drv_ladir = @moduledir@/drivers
 
 fbturbo_drv_la_SOURCES = \
+         armsoc_dumb.h \
+         armsoc_dumb.c \
          compat-api.h \
          uthash.h \
          arm_asm.S \
@@ -36,6 +38,8 @@ fbturbo_drv_la_SOURCES = \
          cpuinfo.h \
          cpu_backend.c \
          cpu_backend.h \
+         drmmode_driver.h \
+         drmmode_dumb.c \
          fb_copyarea.c \
          fb_copyarea.h \
          backing_store_tuner.c \
@@ -44,6 +48,9 @@ fbturbo_drv_la_SOURCES = \
          fbdev.c \
          fbdev_priv.h \
          fb_debug.h \
+         fbdev_bo_dumb.c \
+         fbdev_bo_ump.c \
+         fbdev_bo.h \
          fbdev_lcd.c \
          fbdev_lcd.h \
          sunxi_disp.c \

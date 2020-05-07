@@ -29,9 +29,6 @@
 #include "config.h"
 #endif
 
-#include <ump/ump.h>
-#include <ump/ump_ref_drv.h>
-
 #include <sys/ioctl.h>
 
 #include "xorgVersion.h"
@@ -102,10 +99,10 @@ crc32_byte(uint32_t crc32, uint8_t data)
     return crc32 ^ 0xFFFFFFFF;
 }
 
-static uint32_t calc_ump_checksum(UMPBufferInfoPtr umpbuf, uint32_t seed)
+static uint32_t calc_bo_checksum(BOInfoPtr bo, uint32_t seed)
 {
     int i;
-    uint8_t *buf = umpbuf->addr + umpbuf->offs;
+    uint8_t *buf = bo->addr + bo->offs;
     uint32_t result = 0;
     uint32_t hi, lo;
     for (i = 0; i < RANDOM_SAMPLES_COUNT; i++) {
@@ -114,21 +111,21 @@ static uint32_t calc_ump_checksum(UMPBufferInfoPtr umpbuf, uint32_t seed)
         hi = seed & 0xFFFF0000;
         seed = seed * 1103515245 + 12345;
         lo = seed >> 16;
-        result = crc32_byte(result, buf[(hi | lo) % umpbuf->size]);
+        result = crc32_byte(result, buf[(hi | lo) % bo->size]);
     }
     return result;
 }
 
-static void save_ump_checksum(UMPBufferInfoPtr umpbuf, uint32_t seed)
+static void save_bo_checksum(BOInfoPtr bo, uint32_t seed)
 {
-    umpbuf->has_checksum = TRUE;
-    umpbuf->checksum_seed = seed;
-    umpbuf->checksum = calc_ump_checksum(umpbuf, seed);
+    bo->has_checksum = TRUE;
+    bo->checksum_seed = seed;
+    bo->checksum = calc_bo_checksum(bo, seed);
 }
 
-static Bool test_ump_checksum(UMPBufferInfoPtr umpbuf)
+static Bool test_bo_checksum(BOInfoPtr bo)
 {
-    return calc_ump_checksum(umpbuf, umpbuf->checksum_seed) == umpbuf->checksum;
+    return calc_bo_checksum(bo, bo->checksum_seed) == bo->checksum;
 }
 
 #ifndef ARRAY_SIZE
@@ -209,124 +206,132 @@ WindowWalker(WindowPtr pWin, pointer value)
     return WT_WALKCHILDREN;
 }
 
-/* Migrate pixmap to UMP buffer */
-static UMPBufferInfoPtr
-MigratePixmapToUMP(PixmapPtr pPixmap)
+/* Migrate pixmap to BO */
+static BOInfoPtr
+MigratePixmapToBO(PixmapPtr pPixmap)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
-    UMPBufferInfoPtr umpbuf;
+    BOInfoPtr bo;
     size_t pitch = ((pPixmap->devKind + 7) / 8) * 8;
     size_t size = pitch * pPixmap->drawable.height;
+    size_t test_pitch, test_size;
 
-    HASH_FIND_PTR(mali->HashPixmapToUMP, &pPixmap, umpbuf);
+    HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
 
-    if (umpbuf) {
-        DebugMsg("MigratePixmapToUMP %p, already exists = %p\n", pPixmap, umpbuf);
-        return umpbuf;
+    if (bo) {
+        DebugMsg("MigratePixmapToBO %p, already exists = %p\n", pPixmap, bo);
+        return bo;
     }
 
-    /* create the UMP buffer */
-    umpbuf = calloc(1, sizeof(UMPBufferInfoRec));
-    if (!umpbuf) {
-        ErrorF("MigratePixmapToUMP: calloc failed\n");
+    /* create the BO */
+    bo = calloc(1, sizeof(BOInfoRec));
+    if (!bo) {
+        ErrorF("MigratePixmapToBO: calloc failed\n");
         return NULL;
     }
-    umpbuf->refcount = 1;
-    umpbuf->pPixmap = pPixmap;
-    umpbuf->handle = ump_ref_drv_allocate(size, UMP_REF_DRV_CONSTRAINT_PHYSICALLY_LINEAR);
-    if (umpbuf->handle == UMP_INVALID_MEMORY_HANDLE) {
-        ErrorF("MigratePixmapToUMP: ump_ref_drv_allocate failed\n");
-        free(umpbuf);
+    bo->refcount = 1;
+    bo->pPixmap = pPixmap;
+    bo->handle = mali->bo_ops->new(mali->dev,
+                                pPixmap->drawable.width,
+                                pPixmap->drawable.height,
+                                pPixmap->drawable.depth,
+                                pPixmap->drawable.bitsPerPixel,
+                                FBTURBO_BO_TYPE_DEFAULT);
+
+    if (!mali->bo_ops->valid(bo->handle)) {
+        ErrorF("MigratePixmapToBO: mali->bo_ops->new failed\n");
+        free(bo);
         return NULL;
     }
-    umpbuf->size = size;
-    umpbuf->addr = ump_mapped_pointer_get(umpbuf->handle);
-    umpbuf->depth = pPixmap->drawable.depth;
-    umpbuf->width = pPixmap->drawable.width;
-    umpbuf->height = pPixmap->drawable.height;
+    bo->size = size;
+    bo->addr = mali->bo_ops->map(bo->handle);
+    bo->depth = pPixmap->drawable.depth;
+    bo->width = pPixmap->drawable.width;
+    bo->height = pPixmap->drawable.height;
+    bo->bpp = pPixmap->drawable.bitsPerPixel;
 
     /* copy the pixel data to the new location */
     if (pitch == pPixmap->devKind) {
-        memcpy(umpbuf->addr, pPixmap->devPrivate.ptr, size);
+        memcpy(bo->addr, pPixmap->devPrivate.ptr, size);
     } else {
         int y;
-        for (y = 0; y < umpbuf->height; y++) {
-            memcpy(umpbuf->addr + y * pitch, 
+        for (y = 0; y < bo->height; y++) {
+            memcpy(bo->addr + y * pitch, 
                    pPixmap->devPrivate.ptr + y * pPixmap->devKind,
                    pPixmap->devKind);
         }
     }
 
-    umpbuf->BackupDevKind = pPixmap->devKind;
-    umpbuf->BackupDevPrivatePtr = pPixmap->devPrivate.ptr;
+    bo->BackupDevKind = pPixmap->devKind;
+    bo->BackupDevPrivatePtr = pPixmap->devPrivate.ptr;
 
     pPixmap->devKind = pitch;
-    pPixmap->devPrivate.ptr = umpbuf->addr;
+    pPixmap->devPrivate.ptr = bo->addr;
 
-    HASH_ADD_PTR(mali->HashPixmapToUMP, pPixmap, umpbuf);
+    HASH_ADD_PTR(mali->HashPixmapToBO, pPixmap, bo);
 
-    DebugMsg("MigratePixmapToUMP %p, new buf = %p\n", pPixmap, umpbuf);
-    return umpbuf;
+    DebugMsg("MigratePixmapToBO %p, new buf = %p\n", pPixmap, bo);
+    return bo;
 }
 
 static void UpdateOverlay(ScreenPtr pScreen);
 
-static void unref_ump_buffer_info(UMPBufferInfoPtr umpbuf)
+static void unref_bo_info(FBTurboBOOps *bo_ops, BOInfoPtr bo)
 {
-    if (--umpbuf->refcount <= 0) {
-        DebugMsg("unref_ump_buffer_info(%p) [refcount=%d, handle=%p]\n",
-                 umpbuf, umpbuf->refcount, umpbuf->handle);
-        if (umpbuf->handle != UMP_INVALID_MEMORY_HANDLE) {
-            ump_mapped_pointer_release(umpbuf->handle);
-            ump_reference_release(umpbuf->handle);
+    if (--bo->refcount <= 0) {
+        DebugMsg("unref_bo_info(%p) [refcount=%d, handle=%p]\n",
+                 bo, bo->refcount, bo->handle);
+        if (bo_ops->valid(bo->handle)) {
+            bo_ops->unmap(bo->handle);
+            bo_ops->release(bo->handle);
         }
-        free(umpbuf);
+        free(bo);
     }
     else {
-        DebugMsg("Reduced ump_buffer_info %p refcount to %d\n",
-                 umpbuf, umpbuf->refcount);
+        DebugMsg("Reduced bo_info %p refcount to %d\n",
+                 bo, bo->refcount);
     }
 }
 
-static void umpbuf_add_to_queue(DRI2WindowStatePtr window_state,
-                                UMPBufferInfoPtr umpbuf)
+static void bo_add_to_queue(DRI2WindowStatePtr window_state,
+                                BOInfoPtr bo)
 {
-    if (window_state->ump_queue[window_state->ump_queue_head]) {
-        ErrorF("Fatal error, UMP buffers queue overflow!\n");
+    if (window_state->bo_queue[window_state->bo_queue_head]) {
+        ErrorF("Fatal error, BOs queue overflow!\n");
         return;
     }
 
-    window_state->ump_queue[window_state->ump_queue_head] = umpbuf;
-    window_state->ump_queue_head = (window_state->ump_queue_head + 1) %
-                                   ARRAY_SIZE(window_state->ump_queue);
+    window_state->bo_queue[window_state->bo_queue_head] = bo;
+    window_state->bo_queue_head = (window_state->bo_queue_head + 1) %
+                                   ARRAY_SIZE(window_state->bo_queue);
 }
 
-static UMPBufferInfoPtr umpbuf_fetch_from_queue(DRI2WindowStatePtr window_state)
+static BOInfoPtr bo_fetch_from_queue(DRI2WindowStatePtr window_state)
 {
-    UMPBufferInfoPtr umpbuf;
+    BOInfoPtr bo;
 
     /* Check if the queue is empty */
-    if (window_state->ump_queue_tail == window_state->ump_queue_head)
+    if (window_state->bo_queue_tail == window_state->bo_queue_head)
         return NULL;
 
-    umpbuf = window_state->ump_queue[window_state->ump_queue_tail];
-    window_state->ump_queue[window_state->ump_queue_tail] = NULL;
+    bo = window_state->bo_queue[window_state->bo_queue_tail];
+    window_state->bo_queue[window_state->bo_queue_tail] = NULL;
 
-    window_state->ump_queue_tail = (window_state->ump_queue_tail + 1) %
-                                   ARRAY_SIZE(window_state->ump_queue);
-    return umpbuf;
+    window_state->bo_queue_tail = (window_state->bo_queue_tail + 1) %
+                                   ARRAY_SIZE(window_state->bo_queue);
+    return bo;
 }
 
 /* Verify and fixup the DRI2Buffer before returning it to the X server */
 static DRI2Buffer2Ptr validate_dri2buf(DRI2Buffer2Ptr dri2buf)
 {
-    UMPBufferInfoPtr umpbuf = (UMPBufferInfoPtr)dri2buf->driverPrivate;
-    umpbuf->secure_id = dri2buf->name;
-    umpbuf->pitch     = dri2buf->pitch;
-    umpbuf->cpp       = dri2buf->cpp;
-    umpbuf->offs      = dri2buf->flags;
+    BOInfoPtr bo = (BOInfoPtr)dri2buf->driverPrivate;
+    bo->secure_id = dri2buf->name;
+    bo->pitch     = dri2buf->pitch;
+    bo->cpp       = dri2buf->cpp;
+    bo->offs      = dri2buf->flags;
     return dri2buf;
 }
 
@@ -337,14 +342,15 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     ScreenPtr                pScreen  = pDraw->pScreen;
     ScrnInfoPtr              pScrn    = xf86Screens[pScreen->myNum];
     DRI2Buffer2Ptr           buffer;
-    UMPBufferInfoPtr         privates;
-    ump_handle               handle;
-    FBTurboMaliDRI2           *mali = FBTURBO_MALI_DRI2(pScrn);
+    BOInfoPtr                privates;
+    FBTurboBOHandle          handle;
+    FBTurboMaliDRI2         *mali = FBTURBO_MALI_DRI2(pScrn);
     sunxi_disp_t            *disp = SUNXI_DISP(pScrn);
     Bool                     can_use_overlay = TRUE;
     PixmapPtr                pWindowPixmap;
     DRI2WindowStatePtr       window_state = NULL;
     Bool                     need_window_resize_bug_workaround = FALSE;
+    size_t test_pitch, test_size;
 
     if (!(buffer = calloc(1, sizeof *buffer))) {
         ErrorF("MaliDRI2CreateBuffer: calloc failed\n");
@@ -360,11 +366,11 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
                  pWindowPixmap->screen_x, pWindowPixmap->screen_y);
     }
 
-    /* If it is a pixmap, just migrate this pixmap to UMP buffer */
+    /* If it is a pixmap, just migrate this pixmap to BO */
     if (pDraw->type == DRAWABLE_PIXMAP)
     {
-        if (!(privates = MigratePixmapToUMP((PixmapPtr)pDraw))) {
-            ErrorF("MaliDRI2CreateBuffer: MigratePixmapToUMP failed\n");
+        if (!(privates = MigratePixmapToBO((PixmapPtr)pDraw))) {
+            ErrorF("MaliDRI2CreateBuffer: MigratePixmapToBO failed\n");
             free(buffer);
             return NULL;
         }
@@ -375,7 +381,7 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
         buffer->flags         = 0;
         buffer->cpp           = pDraw->bitsPerPixel / 8;
         buffer->pitch         = ((PixmapPtr)pDraw)->devKind;
-        buffer->name = ump_secure_id_get(privates->handle);
+        buffer->name = mali->bo_ops->secure_id_get(privates->handle);
 
         DebugMsg("DRI2CreateBuffer pix=%p, buf=%p:%p, att=%d, ump=%d:%d, w=%d, h=%d, cpp=%d, depth=%d\n",
                  pDraw, buffer, privates, attachment, buffer->name, buffer->flags,
@@ -404,18 +410,19 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     privates->width    = pDraw->width;
     privates->height   = pDraw->height;
     privates->depth    = pDraw->depth;
+    privates->bpp      = pDraw->bitsPerPixel;
 
     /* We are not interested in anything other than back buffer requests ... */
     if (attachment != DRI2BufferBackLeft || pDraw->type != DRAWABLE_WINDOW) {
-        /* ... and just return some dummy UMP buffer */
-        privates->handle = UMP_INVALID_MEMORY_HANDLE;
+        /* ... and just return some dummy BO */
+        privates->handle = FBTURBO_BO_INVALID_HANDLE;
         privates->addr   = NULL;
-        buffer->name     = mali->ump_null_secure_id;
+        buffer->name     = mali->bo_null_secure_id;
         return validate_dri2buf(buffer);
     }
 
     /* We could not allocate disp layer or get framebuffer secure id */
-    if (!disp || mali->ump_fb_secure_id == UMP_INVALID_SECURE_ID)
+    if (!disp || mali->ump_fb_secure_id == FBTURBO_BO_INVALID_SECURE_ID)
         can_use_overlay = FALSE;
 
     /* Overlay is already used by a different window */
@@ -463,30 +470,30 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
                           !(window_state->buf_request_cnt & 1) &&
                           (pDraw->width != window_state->width ||
                            pDraw->height != window_state->height) &&
-                          mali->ump_null_secure_id <= 2;
+                          mali->bo_null_secure_id <= 2;
 
     if (can_use_overlay) {
         /* Release unneeded buffers */
-        if (window_state->ump_mem_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_mem_buffer_ptr);
-        window_state->ump_mem_buffer_ptr = NULL;
+        if (window_state->bo_mem_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
+        window_state->bo_mem_ptr = NULL;
 
         /* Use offscreen part of the framebuffer as an overlay */
-        privates->handle = UMP_INVALID_MEMORY_HANDLE;
+        privates->handle = FBTURBO_BO_INVALID_HANDLE;
         privates->addr = disp->framebuffer_addr;
 
         buffer->name = mali->ump_fb_secure_id;
 
         if (window_state->buf_request_cnt & 1) {
             buffer->flags = disp->gfx_layer_size;
-            privates->extra_flags |= UMPBUF_MUST_BE_ODD_FRAME;
+            privates->extra_flags |= BO_MUST_BE_ODD_FRAME;
         }
         else {
             buffer->flags = disp->gfx_layer_size + privates->size;
-            privates->extra_flags |= UMPBUF_MUST_BE_EVEN_FRAME;
+            privates->extra_flags |= BO_MUST_BE_EVEN_FRAME;
         }
 
-        umpbuf_add_to_queue(window_state, privates);
+        bo_add_to_queue(window_state, privates);
         privates->refcount++;
 
         mali->pOverlayWin = (WindowPtr)pDraw;
@@ -498,71 +505,67 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
     }
     else {
         /* Release unneeded buffers */
-        if (window_state->ump_back_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_back_buffer_ptr);
-        window_state->ump_back_buffer_ptr = NULL;
-        if (window_state->ump_front_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_front_buffer_ptr);
-        window_state->ump_front_buffer_ptr = NULL;
+        if (window_state->bo_back_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_back_ptr);
+        window_state->bo_back_ptr = NULL;
+        if (window_state->bo_front_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_front_ptr);
+        window_state->bo_front_ptr = NULL;
 
         if (need_window_resize_bug_workaround) {
             DebugMsg("DRI2 buffers size mismatch detected, trying to recover\n");
 
-            if (window_state->ump_mem_buffer_ptr)
-                unref_ump_buffer_info(window_state->ump_mem_buffer_ptr);
-            window_state->ump_mem_buffer_ptr = NULL;
+            if (window_state->bo_mem_ptr)
+                unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
+            window_state->bo_mem_ptr = NULL;
 
-            privates->handle = UMP_INVALID_MEMORY_HANDLE;
+            privates->handle = FBTURBO_BO_INVALID_HANDLE;
             privates->addr   = NULL;
-            buffer->name     = mali->ump_null_secure_id;
+            buffer->name     = mali->bo_null_secure_id;
             return validate_dri2buf(buffer);
         }
 
-        /* Reuse the existing UMP buffer if we can */
-        if (window_state->ump_mem_buffer_ptr &&
-            window_state->ump_mem_buffer_ptr->size == privates->size &&
-            window_state->ump_mem_buffer_ptr->depth == privates->depth &&
-            window_state->ump_mem_buffer_ptr->width == privates->width &&
-            window_state->ump_mem_buffer_ptr->height == privates->height) {
+        /* Reuse the existing BO if we can */
+        if (window_state->bo_mem_ptr &&
+            window_state->bo_mem_ptr->size == privates->size &&
+            window_state->bo_mem_ptr->depth == privates->depth &&
+            window_state->bo_mem_ptr->width == privates->width &&
+            window_state->bo_mem_ptr->height == privates->height) {
 
             free(privates);
 
-            privates = window_state->ump_mem_buffer_ptr;
+            privates = window_state->bo_mem_ptr;
             privates->refcount++;
             buffer->driverPrivate = privates;
-            buffer->name = ump_secure_id_get(privates->handle);
+            buffer->name = mali->bo_ops->secure_id_get(privates->handle);
 
-            DebugMsg("Reuse the already allocated UMP buffer %p, ump=%d\n",
+            DebugMsg("Reuse the already allocated BO %p, ump=%d\n",
                      privates, buffer->name);
             return validate_dri2buf(buffer);
         }
 
-        /* Allocate UMP memory buffer */
-#ifdef HAVE_LIBUMP_CACHE_CONTROL
-        privates->handle = ump_ref_drv_allocate(privates->size,
-                                    UMP_REF_DRV_CONSTRAINT_PHYSICALLY_LINEAR |
-                                    UMP_REF_DRV_CONSTRAINT_USE_CACHE);
-        ump_cache_operations_control(UMP_CACHE_OP_START);
-        ump_switch_hw_usage_secure_id(ump_secure_id_get(privates->handle),
-                                      UMP_USED_BY_MALI);
-        ump_cache_operations_control(UMP_CACHE_OP_FINISH);
-#else
-        privates->handle = ump_ref_drv_allocate(privates->size,
-                                    UMP_REF_DRV_CONSTRAINT_PHYSICALLY_LINEAR);
-#endif
-        if (privates->handle == UMP_INVALID_MEMORY_HANDLE) {
-            ErrorF("Failed to allocate UMP buffer (size=%d)\n",
+        /* Allocate BO */
+        privates->handle = mali->bo_ops->new(mali->dev,
+                                privates->width,
+                                privates->height,
+                                privates->depth,
+                                privates->bpp,
+                                FBTURBO_BO_TYPE_USE_CACHE);
+	mali->bo_ops->switch_hw_usage(privates->handle, FALSE);
+
+        if (!mali->bo_ops->valid(privates->handle)) {
+            ErrorF("Failed to allocate BO (size=%d)\n",
                    (int)privates->size);
         }
-        privates->addr = ump_mapped_pointer_get(privates->handle);
-        buffer->name = ump_secure_id_get(privates->handle);
+        privates->addr = mali->bo_ops->map(privates->handle);
+        buffer->name = mali->bo_ops->secure_id_get(privates->handle);
         buffer->flags = 0;
 
-        /* Replace the old UMP buffer with the newly allocated one */
-        if (window_state->ump_mem_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_mem_buffer_ptr);
+        /* Replace the old BO with the newly allocated one */
+        if (window_state->bo_mem_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
 
-        window_state->ump_mem_buffer_ptr = privates;
+        window_state->bo_mem_ptr = privates;
         privates->refcount++;
     }
 
@@ -575,21 +578,21 @@ static DRI2Buffer2Ptr MaliDRI2CreateBuffer(DrawablePtr  pDraw,
 
 static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
 {
-    UMPBufferInfoPtr privates;
+    BOInfoPtr privates;
     ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
-    if (mali->pOverlayDirtyUMP == buffer->driverPrivate)
-        mali->pOverlayDirtyUMP = NULL;
+    if (mali->pOverlayDirtyBO == buffer->driverPrivate)
+        mali->pOverlayDirtyBO = NULL;
 
     DebugMsg("DRI2DestroyBuffer %s=%p, buf=%p:%p, att=%d\n",
              pDraw->type == DRAWABLE_WINDOW ? "win" : "pix",
              pDraw, buffer, buffer->driverPrivate, buffer->attachment);
 
     if (buffer != NULL) {
-        privates = (UMPBufferInfoPtr)buffer->driverPrivate;
-        unref_ump_buffer_info(privates);
+        privates = (BOInfoPtr)buffer->driverPrivate;
+        unref_bo_info(mali->bo_ops, privates);
         free(buffer);
     }
 }
@@ -597,29 +600,26 @@ static void MaliDRI2DestroyBuffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
 /* Do ordinary copy */
 static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
                                     RegionPtr        pRegion,
-                                    UMPBufferInfoPtr umpbuf)
+                                    FBTurboBOOps     *bo_ops,
+                                    BOInfoPtr        bo)
 {
     GCPtr pGC;
     RegionPtr copyRegion;
     ScreenPtr pScreen = pDraw->pScreen;
-    UMPBufferInfoPtr privates;
+    BOInfoPtr privates;
     PixmapPtr pScratchPixmap;
 
-#ifdef HAVE_LIBUMP_CACHE_CONTROL
-    if (umpbuf->handle != UMP_INVALID_MEMORY_HANDLE) {
-        /* That's a normal UMP allocation, not a wrapped framebuffer */
-        ump_cache_operations_control(UMP_CACHE_OP_START);
-        ump_switch_hw_usage_secure_id(umpbuf->secure_id, UMP_USED_BY_CPU);
-        ump_cache_operations_control(UMP_CACHE_OP_FINISH);
+    if (bo_ops->valid(bo->handle)) {
+        /* That's a normal BO allocation, not a wrapped framebuffer */
+        bo_ops->switch_hw_usage(bo->handle, TRUE);
     }
-#endif
 
     pGC = GetScratchGC(pDraw->depth, pScreen);
     pScratchPixmap = GetScratchPixmapHeader(pScreen,
-                                            umpbuf->width, umpbuf->height,
-                                            umpbuf->depth, umpbuf->cpp * 8,
-                                            umpbuf->pitch,
-                                            umpbuf->addr + umpbuf->offs);
+                                            bo->width, bo->height,
+                                            bo->depth, bo->cpp * 8,
+                                            bo->pitch,
+                                            bo->addr + bo->offs);
     copyRegion = REGION_CREATE(pScreen, NULL, 0);
     REGION_COPY(pScreen, copyRegion, pRegion);
     (*pGC->funcs->ChangeClip)(pGC, CT_REGION, copyRegion, 0);
@@ -629,14 +629,10 @@ static void MaliDRI2CopyRegion_copy(DrawablePtr      pDraw,
     FreeScratchPixmapHeader(pScratchPixmap);
     FreeScratchGC(pGC);
 
-#ifdef HAVE_LIBUMP_CACHE_CONTROL
-    if (umpbuf->handle != UMP_INVALID_MEMORY_HANDLE) {
-        /* That's a normal UMP allocation, not a wrapped framebuffer */
-        ump_cache_operations_control(UMP_CACHE_OP_START);
-        ump_switch_hw_usage_secure_id(umpbuf->secure_id, UMP_USED_BY_MALI);
-        ump_cache_operations_control(UMP_CACHE_OP_FINISH);
+    if (bo_ops->valid(bo->handle)) {
+        /* That's a normal BO allocation, not a wrapped framebuffer */
+        bo_ops->switch_hw_usage(bo->handle, FALSE);
     }
-#endif
 }
 
 static void FlushOverlay(ScreenPtr pScreen)
@@ -644,20 +640,21 @@ static void FlushOverlay(ScreenPtr pScreen)
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
-    if (mali->pOverlayWin && mali->pOverlayDirtyUMP) {
+    if (mali->pOverlayWin && mali->pOverlayDirtyBO) {
         DebugMsg("Flushing overlay content from DRI2 buffer to window\n");
         MaliDRI2CopyRegion_copy((DrawablePtr)mali->pOverlayWin,
                                 &pScreen->root->winSize,
-                                mali->pOverlayDirtyUMP);
-        mali->pOverlayDirtyUMP = NULL;
+                                mali->bo_ops,
+                                mali->pOverlayDirtyBO);
+        mali->pOverlayDirtyBO = NULL;
     }
 }
 
 #ifdef DEBUG_WITH_RGB_PATTERN
 static void check_rgb_pattern(DRI2WindowStatePtr window_state,
-                              UMPBufferInfoPtr umpbuf)
+                              BOInfoPtr bo)
 {
-    switch (*(uint32_t *)(umpbuf->addr + umpbuf->offs)) {
+    switch (*(uint32_t *)(bo->addr + bo->offs)) {
     case 0xFFFF0000:
         if (window_state->rgb_pattern_state == 0) {
             ErrorF("starting RGB pattern with [Red]\n");
@@ -702,7 +699,7 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
     ScreenPtr pScreen = pDraw->pScreen;
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
-    UMPBufferInfoPtr umpbuf;
+    BOInfoPtr bo;
     sunxi_disp_t *disp = SUNXI_DISP(xf86Screens[pScreen->myNum]);
     DRI2WindowStatePtr window_state = NULL;
     HASH_FIND_PTR(mali->HashWindowState, &pDraw, window_state);
@@ -717,8 +714,8 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
         return;
     }
 
-    /* Try to fetch a new UMP buffer from the queue */
-    umpbuf = umpbuf_fetch_from_queue(window_state);
+    /* Try to fetch a new BO from the queue */
+    bo = bo_fetch_from_queue(window_state);
 
     /*
      * In the case if the queue of incoming buffers is already empty and
@@ -727,31 +724,31 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
      * and the front buffer may not. But if this is not the case, we need to
      * take some corrective actions here.
      */
-    if (!umpbuf && window_state->ump_front_buffer_ptr &&
-                   window_state->ump_front_buffer_ptr->addr &&
-                   window_state->ump_back_buffer_ptr &&
-                   window_state->ump_back_buffer_ptr->addr &&
-                   window_state->ump_front_buffer_ptr != window_state->ump_back_buffer_ptr) {
+    if (!bo && window_state->bo_front_ptr &&
+                   window_state->bo_front_ptr->addr &&
+                   window_state->bo_back_ptr &&
+                   window_state->bo_back_ptr->addr &&
+                   window_state->bo_front_ptr != window_state->bo_back_ptr) {
 
-        UMPBufferInfoPtr ump_front = window_state->ump_front_buffer_ptr;
-        UMPBufferInfoPtr ump_back = window_state->ump_back_buffer_ptr;
+        BOInfoPtr bo_front = window_state->bo_front_ptr;
+        BOInfoPtr bo_back = window_state->bo_back_ptr;
 
-        Bool front_modified = ump_front->has_checksum && !test_ump_checksum(ump_front);
-        Bool back_modified = ump_back->has_checksum && !test_ump_checksum(ump_back);
+        Bool front_modified = bo_front->has_checksum && !test_bo_checksum(bo_front);
+        Bool back_modified = bo_back->has_checksum && !test_bo_checksum(bo_back);
 
-        ump_front->has_checksum = FALSE;
-        ump_back->has_checksum = FALSE;
+        bo_front->has_checksum = FALSE;
+        bo_back->has_checksum = FALSE;
 
         if (back_modified && !front_modified) {
             /* That's normal, we have successfully passed this check */
-            ump_back->extra_flags |= UMPBUF_PASSED_ORDER_CHECK;
-            ump_front->extra_flags |= UMPBUF_PASSED_ORDER_CHECK;
+            bo_back->extra_flags |= BO_PASSED_ORDER_CHECK;
+            bo_front->extra_flags |= BO_PASSED_ORDER_CHECK;
         }
         else if (front_modified) {
             /* That's bad, the order of buffers is messed up, but we can exchange them */
-            UMPBufferInfoPtr tmp               = window_state->ump_back_buffer_ptr;
-            window_state->ump_back_buffer_ptr  = window_state->ump_front_buffer_ptr;
-            window_state->ump_front_buffer_ptr = tmp;
+            BOInfoPtr tmp              = window_state->bo_back_ptr;
+            window_state->bo_back_ptr  = window_state->bo_front_ptr;
+            window_state->bo_front_ptr = tmp;
             DebugMsg("Unexpected modification of the front buffer detected.\n");
         }
         else {
@@ -761,75 +758,75 @@ static void MaliDRI2CopyRegion(DrawablePtr   pDraw,
 
     /*
      * Swap back and front buffers. But also ensure that the buffer
-     * flags UMPBUF_MUST_BE_ODD_FRAME and UMPBUF_MUST_BE_EVEN_FRAME
+     * flags BO_MUST_BE_ODD_FRAME and BO_MUST_BE_EVEN_FRAME
      * are respected. In the case if swapping the buffers would result
-     * in fetching the UMP buffer from the queue in the wrong order,
+     * in fetching the BO from the queue in the wrong order,
      * just skip the swap. This is a hack, which causes some temporary
      * glitch when resizing windows, but prevents a bigger problem.
      */
-    if (!umpbuf || (!((umpbuf->extra_flags & UMPBUF_MUST_BE_ODD_FRAME) &&
+    if (!bo || (!((bo->extra_flags & BO_MUST_BE_ODD_FRAME) &&
                      (window_state->buf_swap_cnt & 1)) &&
-                    !((umpbuf->extra_flags & UMPBUF_MUST_BE_EVEN_FRAME) &&
+                    !((bo->extra_flags & BO_MUST_BE_EVEN_FRAME) &&
                      !(window_state->buf_swap_cnt & 1)))) {
-        UMPBufferInfoPtr tmp               = window_state->ump_back_buffer_ptr;
-        window_state->ump_back_buffer_ptr  = window_state->ump_front_buffer_ptr;
-        window_state->ump_front_buffer_ptr = tmp;
+        BOInfoPtr tmp              = window_state->bo_back_ptr;
+        window_state->bo_back_ptr  = window_state->bo_front_ptr;
+        window_state->bo_front_ptr = tmp;
         window_state->buf_swap_cnt++;
     }
 
-    /* Try to replace the front buffer with a new UMP buffer from the queue */
-    if (umpbuf) {
-        if (window_state->ump_front_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_front_buffer_ptr);
-        window_state->ump_front_buffer_ptr = umpbuf;
+    /* Try to replace the front buffer with a new BO from the queue */
+    if (bo) {
+        if (window_state->bo_front_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_front_ptr);
+        window_state->bo_front_ptr = bo;
     }
     else {
-        umpbuf = window_state->ump_front_buffer_ptr;
+        bo = window_state->bo_front_ptr;
     }
 
-    if (!umpbuf)
-        umpbuf = window_state->ump_mem_buffer_ptr;
+    if (!bo)
+        bo = window_state->bo_mem_ptr;
 
-    if (!umpbuf || !umpbuf->addr)
+    if (!bo || !bo->addr)
         return;
 
 #ifdef DEBUG_WITH_RGB_PATTERN
-    check_rgb_pattern(window_state, umpbuf);
+    check_rgb_pattern(window_state, bo);
 #endif
 
     /*
-     * Here we can calculate checksums over randomly sampled bytes from UMP
-     * buffers in order to check later whether they had been modified. This
-     * is skipped if the buffers have UMPBUF_PASSED_ORDER_CHECK flag set.
+     * Here we can calculate checksums over randomly sampled bytes from BO
+     * in order to check later whether they had been modified. This
+     * is skipped if the buffers have BO_PASSED_ORDER_CHECK flag set.
      */
-    if (window_state->ump_front_buffer_ptr && window_state->ump_front_buffer_ptr->addr &&
-        window_state->ump_back_buffer_ptr && window_state->ump_back_buffer_ptr->addr &&
-        window_state->ump_front_buffer_ptr != window_state->ump_back_buffer_ptr) {
+    if (window_state->bo_front_ptr && window_state->bo_front_ptr->addr &&
+        window_state->bo_back_ptr && window_state->bo_back_ptr->addr &&
+        window_state->bo_front_ptr != window_state->bo_back_ptr) {
 
-        UMPBufferInfoPtr ump_front = window_state->ump_front_buffer_ptr;
-        UMPBufferInfoPtr ump_back = window_state->ump_back_buffer_ptr;
+        BOInfoPtr bo_front = window_state->bo_front_ptr;
+        BOInfoPtr bo_back = window_state->bo_back_ptr;
 
-        if (!(ump_front->extra_flags & UMPBUF_PASSED_ORDER_CHECK))
-            save_ump_checksum(ump_front, window_state->buf_swap_cnt);
-        if (!(ump_back->extra_flags & UMPBUF_PASSED_ORDER_CHECK))
-            save_ump_checksum(ump_back, window_state->buf_swap_cnt);
+        if (!(bo_front->extra_flags & BO_PASSED_ORDER_CHECK))
+            save_bo_checksum(bo_front, window_state->buf_swap_cnt);
+        if (!(bo_back->extra_flags & BO_PASSED_ORDER_CHECK))
+            save_bo_checksum(bo_back, window_state->buf_swap_cnt);
     }
 
     UpdateOverlay(pScreen);
 
-    if (!mali->bOverlayWinEnabled || umpbuf->handle != UMP_INVALID_MEMORY_HANDLE) {
-        MaliDRI2CopyRegion_copy(pDraw, pRegion, umpbuf);
-        mali->pOverlayDirtyUMP = NULL;
+    if (!mali->bOverlayWinEnabled || mali->bo_ops->valid(bo->handle)) {
+        MaliDRI2CopyRegion_copy(pDraw, pRegion, mali->bo_ops, bo);
+        mali->pOverlayDirtyBO = NULL;
         return;
     }
 
-    /* Mark the overlay as "dirty" and remember the last up to date UMP buffer */
-    mali->pOverlayDirtyUMP = umpbuf;
+    /* Mark the overlay as "dirty" and remember the last up to date BO */
+    mali->pOverlayDirtyBO = bo;
 
     /* Activate the overlay */
     sunxi_layer_set_output_window(disp, pDraw->x, pDraw->y, pDraw->width, pDraw->height);
-    sunxi_layer_set_rgb_input_buffer(disp, umpbuf->cpp * 8, umpbuf->offs,
-                                     umpbuf->width, umpbuf->height, umpbuf->pitch / 4);
+    sunxi_layer_set_rgb_input_buffer(disp, bo->cpp * 8, bo->offs,
+                                     bo->width, bo->height, bo->pitch / 4);
     sunxi_layer_show(disp);
 
     if (mali->bSwapbuffersWait) {
@@ -925,12 +922,12 @@ DestroyWindow(WindowPtr pWin)
     if (window_state) {
         DebugMsg("Free DRI2 bookkeeping for window %p\n", pWin);
         HASH_DEL(mali->HashWindowState, window_state);
-        if (window_state->ump_mem_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_mem_buffer_ptr);
-        if (window_state->ump_back_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_back_buffer_ptr);
-        if (window_state->ump_front_buffer_ptr)
-            unref_ump_buffer_info(window_state->ump_front_buffer_ptr);
+        if (window_state->bo_mem_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_mem_ptr);
+        if (window_state->bo_back_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_back_ptr);
+        if (window_state->bo_front_ptr)
+            unref_bo_info(mali->bo_ops, window_state->bo_front_ptr);
         free(window_state);
     }
 
@@ -979,7 +976,7 @@ GetImage(DrawablePtr pDrawable, int x, int y, int w, int h,
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
 
     /* FIXME: more precise check */
-    if (mali->pOverlayDirtyUMP)
+    if (mali->pOverlayDirtyBO)
         FlushOverlay(pScreen);
 
     if (mali->GetImage) {
@@ -997,18 +994,18 @@ DestroyPixmap(PixmapPtr pPixmap)
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
     FBTurboMaliDRI2 *mali = FBTURBO_MALI_DRI2(pScrn);
     Bool result;
-    UMPBufferInfoPtr umpbuf;
-    HASH_FIND_PTR(mali->HashPixmapToUMP, &pPixmap, umpbuf);
+    BOInfoPtr bo;
+    HASH_FIND_PTR(mali->HashPixmapToBO, &pPixmap, bo);
 
-    if (umpbuf) {
-        DebugMsg("DestroyPixmap %p for migrated UMP pixmap (UMP buffer=%p)\n", pPixmap, umpbuf);
+    if (bo) {
+        DebugMsg("DestroyPixmap %p for migrated BO pixmap (BO=%p)\n", pPixmap, bo);
 
-        pPixmap->devKind = umpbuf->BackupDevKind;
-        pPixmap->devPrivate.ptr = umpbuf->BackupDevPrivatePtr;
+        pPixmap->devKind = bo->BackupDevKind;
+        pPixmap->devPrivate.ptr = bo->BackupDevPrivatePtr;
 
-        HASH_DEL(mali->HashPixmapToUMP, umpbuf);
-        umpbuf->pPixmap = NULL;
-        unref_ump_buffer_info(umpbuf);
+        HASH_DEL(mali->HashPixmapToBO, bo);
+        bo->pPixmap = NULL;
+        unref_bo_info(mali->bo_ops, bo);
     }
 
     pScreen->DestroyPixmap = mali->DestroyPixmap;
@@ -1060,20 +1057,6 @@ static void DisableHWCursor(ScrnInfoPtr pScrn)
     }
 }
 
-static unsigned long ump_get_size_from_secure_id(ump_secure_id secure_id)
-{
-    unsigned long size;
-    ump_handle handle;
-    if (secure_id == UMP_INVALID_SECURE_ID)
-        return 0;
-    handle = ump_handle_create_from_secure_id(secure_id);
-    if (handle == UMP_INVALID_MEMORY_HANDLE)
-        return 0;
-    size = ump_size_get(handle);
-    ump_reference_release(handle);
-    return size;
-}
-
 static const char *driverNames[1] = {
     "lima" /* DRI2DriverDRI */
 };
@@ -1095,7 +1078,8 @@ static const char *driverNamesWithVDPAU[2] = {
 
 FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
                                   Bool      bUseOverlay,
-                                  Bool      bSwapbuffersWait)
+                                  Bool      bSwapbuffersWait,
+                                  Bool      bUseDumb)
 {
     int drm_fd;
     int drm_type = 0;
@@ -1133,42 +1117,60 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         return NULL;
     }
 
-    if (ump_open() != UMP_OK) {
-        drmClose(drm_fd);
-        ErrorF("FBTurboMaliDRI2_Init: ump_open() != UMP_OK\n");
-        return NULL;
-    }
 
     if (!(mali = calloc(1, sizeof(FBTurboMaliDRI2)))) {
         ErrorF("FBTurboMaliDRI2_Init: calloc failed\n");
         return NULL;
     }
 
-    mali->ump_alternative_fb_secure_id = UMP_INVALID_SECURE_ID;
+    if (bUseDumb)
+        mali->bo_ops = &dumb_bo_ops;
+    else
+        mali->bo_ops = &ump_bo_ops;
+
+    if (!mali->bo_ops->open(&mali->dev, drm_fd)) {
+        drmClose(drm_fd);
+        free(mali);
+        ErrorF("FBTurboMaliDRI2_Init: mali->bo_ops->open() failed\n");
+        return NULL;
+    }
+
+    mali->ump_alternative_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
 
     if (disp && bUseOverlay) {
         /* Try to get UMP framebuffer wrapper with secure id 1 */
-        ioctl(disp->fd_fb, GET_UMP_SECURE_ID_BUF1, &mali->ump_alternative_fb_secure_id);
-        /* Try to allocate a small dummy UMP buffer to secure id 2 */
-        mali->ump_null_handle1 = ump_ref_drv_allocate(4096, UMP_REF_DRV_CONSTRAINT_NONE);
-        if (mali->ump_null_handle1 != UMP_INVALID_MEMORY_HANDLE)
-            mali->ump_null_secure_id = ump_secure_id_get(mali->ump_null_handle1);
-        mali->ump_null_handle2 = UMP_INVALID_MEMORY_HANDLE;
+        if (!bUseDumb)
+            ioctl(disp->fd_fb, GET_UMP_SECURE_ID_BUF1, &mali->ump_alternative_fb_secure_id);
+
+        /* Try to allocate a small dummy BO to secure id 2 */
+        mali->bo_null_handle1 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32,
+                                               FBTURBO_BO_TYPE_NONE);
+        if (mali->bo_ops->valid(mali->bo_null_handle1))
+            mali->bo_null_secure_id = mali->bo_ops->secure_id_get(mali->bo_null_handle1);
+
+        mali->bo_null_handle2 = FBTURBO_BO_INVALID_HANDLE;
+
         /* Try to get UMP framebuffer for the secure id other than 1 and 2 */
-        if (ioctl(disp->fd_fb, GET_UMP_SECURE_ID_SUNXI_FB, &mali->ump_fb_secure_id) ||
-                                   mali->ump_fb_secure_id == UMP_INVALID_SECURE_ID) {
-            xf86DrvMsg(pScreen->myNum, X_INFO,
-                  "GET_UMP_SECURE_ID_SUNXI_FB ioctl failed, overlays can't be used\n");
-            mali->ump_fb_secure_id = UMP_INVALID_SECURE_ID;
+        if (!bUseDumb) {
+            if (ioctl(disp->fd_fb, GET_UMP_SECURE_ID_SUNXI_FB, &mali->ump_fb_secure_id) ||
+                                       mali->ump_fb_secure_id == FBTURBO_BO_INVALID_SECURE_ID) {
+                xf86DrvMsg(pScreen->myNum, X_INFO,
+                      "GET_UMP_SECURE_ID_SUNXI_FB ioctl failed, overlays can't be used\n");
+                mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
+            }
         }
-        if (mali->ump_alternative_fb_secure_id == UMP_INVALID_SECURE_ID ||
-            ump_get_size_from_secure_id(mali->ump_alternative_fb_secure_id) !=
+        else
+            mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
+
+        if (mali->ump_alternative_fb_secure_id == FBTURBO_BO_INVALID_SECURE_ID ||
+            mali->bo_ops->get_size_from_secure_id(mali->ump_alternative_fb_secure_id) !=
                                           disp->framebuffer_size) {
             xf86DrvMsg(pScreen->myNum, X_INFO,
                   "UMP does not wrap the whole framebuffer, overlays can't be used\n");
-            mali->ump_fb_secure_id = UMP_INVALID_SECURE_ID;
-            mali->ump_alternative_fb_secure_id = UMP_INVALID_SECURE_ID;
+            mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
+            mali->ump_alternative_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
         }
+
         if (disp->framebuffer_size - disp->gfx_layer_size <
                                                  disp->xres * disp->yres * 4 * 2) {
             int needed_fb_num = (disp->xres * disp->yres * 4 * 2 +
@@ -1183,21 +1185,25 @@ FBTurboMaliDRI2 *FBTurboMaliDRI2_Init(ScreenPtr pScreen,
         }
     }
     else {
-        /* Try to allocate small dummy UMP buffers to secure id 1 and 2 */
-        mali->ump_null_handle1 = ump_ref_drv_allocate(4096, UMP_REF_DRV_CONSTRAINT_NONE);
-        if (mali->ump_null_handle1 != UMP_INVALID_MEMORY_HANDLE)
-            mali->ump_null_secure_id = ump_secure_id_get(mali->ump_null_handle1);
-        mali->ump_null_handle2 = ump_ref_drv_allocate(4096, UMP_REF_DRV_CONSTRAINT_NONE);
+        /* Try to allocate small dummy BOs to secure id 1 and 2 */
+        mali->bo_null_handle1 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32, 
+                                               FBTURBO_BO_TYPE_NONE);
+        if (mali->bo_ops->valid(mali->bo_null_handle1))
+            mali->bo_null_secure_id = mali->bo_ops->secure_id_get(mali->bo_null_handle1);
+
+        mali->bo_null_handle2 = mali->bo_ops->new(mali->dev, 32, 32, 0, 32, 
+                                               FBTURBO_BO_TYPE_NONE);
+
         /* No UMP wrappers for the framebuffer are available */
-        mali->ump_fb_secure_id = UMP_INVALID_SECURE_ID;
+        mali->ump_fb_secure_id = FBTURBO_BO_INVALID_SECURE_ID;
     }
 
-    if (mali->ump_null_secure_id > 2) {
+    if (mali->bo_null_secure_id > 2) {
         xf86DrvMsg(pScreen->myNum, X_INFO,
                    "warning, can't workaround Mali r3p0 window resize bug\n");
     }
 
-    if (disp && mali->ump_fb_secure_id != UMP_INVALID_SECURE_ID)
+    if (disp && mali->ump_fb_secure_id != FBTURBO_BO_INVALID_SECURE_ID)
         xf86DrvMsg(pScreen->myNum, X_INFO,
               "enabled display controller hardware overlays for DRI2\n");
     else if (bUseOverlay)
@@ -1291,10 +1297,10 @@ void FBTurboMaliDRI2_Close(ScreenPtr pScreen)
         hwc->DisableHWCursor = mali->DisableHWCursor;
     }
 
-    if (mali->ump_null_handle1 != UMP_INVALID_MEMORY_HANDLE)
-        ump_reference_release(mali->ump_null_handle1);
-    if (mali->ump_null_handle2 != UMP_INVALID_MEMORY_HANDLE)
-        ump_reference_release(mali->ump_null_handle2);
+    if (mali->bo_ops->valid(mali->bo_null_handle1))
+        mali->bo_ops->release(mali->bo_null_handle1);
+    if (mali->bo_ops->valid(mali->bo_null_handle2))
+        mali->bo_ops->release(mali->bo_null_handle2);
 
     drmClose(mali->drm_fd);
     DRI2CloseScreen(pScreen);
