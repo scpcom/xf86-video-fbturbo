@@ -89,7 +89,13 @@
 
 #include "compat-api.h"
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 #ifdef XSERVER_PLATFORM_BUS
+#define FBTURBO_XSERVER_PLATFORM_BUS
+#endif
+#endif
+
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 #include "xf86platformBus.h"
 #endif
 #ifdef XSERVER_LIBPCIACCESS
@@ -161,7 +167,7 @@ static const struct pci_id_match fbdev_device_match[] = {
 };
 #endif
 
-#ifdef XSERVER_PLATFORM_BUS
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 static Bool
 fbdev_platform_probe(DriverPtr driver,
                   int entity_num, int flags, struct xf86_platform_device *dev,
@@ -185,7 +191,7 @@ _X_EXPORT DriverRec FBDEV = {
     fbdev_device_match,
     FBDevPciProbe,
 #endif
-#ifdef XSERVER_PLATFORM_BUS
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
     fbdev_platform_probe,
 #endif
 };
@@ -679,7 +685,9 @@ static struct FBTurboConnection {
 static int
 FBTurboSetDRMMaster(ScrnInfoPtr pScrn)
 {
+#ifdef XF86_PDEV_SERVER_FD
 	FBDevPtr fPtr = FBDEVPTR(pScrn);
+#endif
 	int ret = 0;
 
 #ifdef XF86_PDEV_SERVER_FD
@@ -721,7 +729,9 @@ FBTurboDropDRMMaster(void)
 
 FBDevEntPtr fbdev_ent_priv(ScrnInfoPtr pScrn);
 
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 static int open_hw(const char *dev);
+#endif
 
 static Bool
 FBTurboOpenDRMCard(ScrnInfoPtr pScrn)
@@ -730,7 +740,9 @@ FBTurboOpenDRMCard(ScrnInfoPtr pScrn)
     int drm_type = 0;
     FBDevPtr fPtr = FBDEVPTR(pScrn);
     FBDevEntPtr fEntPtr = fbdev_ent_priv(pScrn);
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
     EntityInfoPtr pEnt = fPtr->pEnt;
+#endif
     Bool have_sunxi_cedar = TRUE;
 
     if (!xf86LoadKernelModule("mali"))
@@ -759,7 +771,7 @@ FBTurboOpenDRMCard(ScrnInfoPtr pScrn)
         return TRUE;
     }
 
-#ifdef XSERVER_PLATFORM_BUS
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
     if (pEnt->location.type == BUS_PLATFORM) {
         drm_type = 3;
 #ifdef XF86_PDEV_SERVER_FD
@@ -1010,6 +1022,7 @@ FBDevEntPtr fbdev_ent_priv(ScrnInfoPtr pScrn)
     return pPriv->ptr;
 }
 
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 static void
 fbdev_setup_scrn_hooks(ScrnInfoPtr pScrn)
 {
@@ -1034,6 +1047,7 @@ fbdev_setup_scrn_hooks(ScrnInfoPtr pScrn)
 	pScrn->LeaveVT       = FBTurboLeaveVT;
 #endif
 }
+#endif
 
 static void
 fbdev_setup_entity(ScrnInfoPtr pScrn, int entity_num)
@@ -1054,6 +1068,7 @@ fbdev_setup_entity(ScrnInfoPtr pScrn, int entity_num)
         pPriv->ptr = xnfcalloc(sizeof(FBDevEntRec), 1);
 }
 
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 static int
 get_passed_fd(void)
 {
@@ -1129,6 +1144,7 @@ probe_hw(const char *dev, struct xf86_platform_device *platform_dev)
     }
     return FALSE;
 }
+#endif
 
 #ifdef XSERVER_LIBPCIACCESS
 static Bool FBDevPciProbe(DriverPtr drv, int entity_num,
@@ -1183,7 +1199,7 @@ static Bool FBDevPciProbe(DriverPtr drv, int entity_num,
 }
 #endif
 
-#ifdef XSERVER_PLATFORM_BUS
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 static Bool
 fbdev_platform_probe(DriverPtr driver,
                   int entity_num, int flags, struct xf86_platform_device *dev,
@@ -1268,12 +1284,11 @@ FBDevProbe(DriverPtr drv, int flags)
 		  
 	    }
 	    if (fbdevHWProbe(NULL,(char*)dev,NULL)) {
+		int entity;
 		pScrn = NULL;
 		if (isPci) {
 #ifndef XSERVER_LIBPCIACCESS
 		    /* XXX what about when there's no busID set? */
-		    int entity;
-		    
 		    entity = xf86ClaimPciSlot(bus,device,func,drv,
 					      0,devSections[i],
 					      TRUE);
@@ -1289,8 +1304,6 @@ FBDevProbe(DriverPtr drv, int flags)
 #endif
 		} else if (isIsa) {
 #ifdef HAVE_ISA
-		    int entity;
-		    
 		    entity = xf86ClaimIsaSlot(drv, 0,
 					      devSections[i], TRUE);
 		    pScrn = xf86ConfigIsaEntity(pScrn,0,entity,
@@ -1298,8 +1311,6 @@ FBDevProbe(DriverPtr drv, int flags)
 						      NULL,NULL,NULL,NULL);
 #endif
 		} else {
-		   int entity;
-
 		    entity = xf86ClaimFbSlot(drv, 0,
 					      devSections[i], TRUE);
 		    pScrn = xf86ConfigFbEntity(pScrn,0,entity,
@@ -1331,6 +1342,8 @@ FBDevProbe(DriverPtr drv, int flags)
 
 		    INFO_MSG(
 			       "using %s", dev ? dev : "default device");
+
+		    fbdev_setup_entity(pScrn, entity);
 		}
 	    }
 	}
@@ -1474,9 +1487,11 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	}
 #endif
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 	if (FBTurboOpenDRM(pScrn)) {
 		fPtr->isFBDevHW = FALSE;
 	} else {
+#endif
 		INFO_MSG("find device");
 		device = xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev");
 		INFO_MSG("open device %s", device);
@@ -1485,7 +1500,9 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 			INFO_MSG("Could not open device %s", device);
 			return FALSE;
 		}
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 	}
+#endif
 
 	default_depth = FBTurboHWGetDepth(pScrn,&fbbpp);
 
