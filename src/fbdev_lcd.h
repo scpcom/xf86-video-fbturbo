@@ -39,8 +39,10 @@ extern void fbdev_fill_mode(DisplayModePtr mode_ptr, int xres, int yres, float v
 extern void fbdev_fill_crtc_mode(DisplayModePtr mode_ptr, int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
 extern DisplayModePtr fbdev_make_mode(int xres, int yres, float vrefresh, int type, DisplayModePtr prev);
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 extern int fbdev_create_lease(RRLeasePtr lease, int *fd);
 extern void fbdev_terminate_lease(RRLeasePtr lease);
+#endif
 
 extern Bool FBDEV_lcd_init(ScrnInfoPtr pScrn);
 

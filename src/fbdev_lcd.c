@@ -78,9 +78,11 @@ struct fbdev_lcd_output_priv {
 	drmModePropertyBlobPtr edid_blob;
 };
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 typedef struct {
     uint32_t    lessee_id;
 } fbdev_lease_private_rec, *fbdev_lease_private_ptr;
+#endif
 
 static void fbdev_lcd_output_dpms(xf86OutputPtr output, int mode);
 
@@ -1095,6 +1097,7 @@ exit:
 
 }
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 static void
 fbdev_validate_leases(ScrnInfoPtr pScrn)
 {
@@ -1241,6 +1244,7 @@ fbdev_terminate_lease(RRLeasePtr lease)
         xf86CrtcLeaseTerminated(lease);
     }
 }
+#endif
 
 Bool FBDEV_lcd_init(ScrnInfoPtr pScrn)
 {
@@ -1430,8 +1434,10 @@ fbdev_set_desired_modes(ScrnInfoPtr pScrn, FBDevPtr fPtr, Bool set_hw)
         }
     }
 
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
     /* Validate leases on VT re-entry */
     fbdev_validate_leases(pScrn);
+#endif
 
     TRACE_EXIT();
 

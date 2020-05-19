@@ -375,8 +375,10 @@ static Bool fbdev_crtc_config_resize(ScrnInfoPtr pScrn, int width, int height)
 static const xf86CrtcConfigFuncsRec fbdev_crtc_config_funcs =
 {
 	.resize = fbdev_crtc_config_resize,
+#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 	.create_lease = fbdev_create_lease,
 	.terminate_lease = fbdev_terminate_lease,
+#endif
 };
 
 static void FBDev_crtc_config(ScrnInfoPtr pScrn)
