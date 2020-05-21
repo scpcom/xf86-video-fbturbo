@@ -89,9 +89,11 @@
 
 #include "compat-api.h"
 
+#ifdef HAVE_LIBBCM_HOST
 #if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
 #ifdef XSERVER_PLATFORM_BUS
 #define FBTURBO_XSERVER_PLATFORM_BUS
+#endif
 #endif
 #endif
 
@@ -1487,7 +1489,7 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 	}
 #endif
 
-#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 	if (FBTurboOpenDRM(pScrn)) {
 		fPtr->isFBDevHW = FALSE;
 	} else {
@@ -1500,7 +1502,7 @@ FBDevPreInit(ScrnInfoPtr pScrn, int flags)
 			INFO_MSG("Could not open device %s", device);
 			return FALSE;
 		}
-#if ABI_VIDEODRV_VERSION >= SET_ABI_VERSION(24, 0)
+#ifdef FBTURBO_XSERVER_PLATFORM_BUS
 	}
 #endif
 
